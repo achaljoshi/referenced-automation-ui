@@ -1,6 +1,7 @@
 package com.company.automation.pages;
 
 import com.company.automation.base.BasePage;
+import com.company.automation.utils.WaitUtils;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 
@@ -33,7 +34,12 @@ public class ProductsPage extends BasePage {
     }
 
     public void addFirstProductToCart() {
-        driver.findElements(addToCartButtons).get(0).click();
+        // The inventory list re-renders once client-side JS finishes hydrating;
+        // clicking before that settles can land on a button whose click handler
+        // hasn't been attached yet, so wait for the list itself before the
+        // click - not just for the button to look "clickable" to Selenium.
+        WaitUtils.waitForAllVisible(driver, inventoryItems);
+        click(addToCartButtons);
     }
 
     public int cartItemCount() {

@@ -13,6 +13,10 @@ logs/
 /allure-report/
 screenshots/
 
+# Materialised at test runtime by ExtentConfigBootstrap (copied from the
+# classpath resource in src/main/resources) - never hand-edit this copy
+/extent-spark-config.xml
+
 # OS / editor
 .DS_Store
 Thumbs.db

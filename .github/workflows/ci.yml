@@ -46,8 +46,14 @@ jobs:
           if [ -s "$RERUN_FILE" ]; then
             echo "== Retrying failed scenarios =="
             cat "$RERUN_FILE"
+            # cucumber.features takes a comma-separated feature-path list, not
+            # the classic CLI's "@rerun.txt" indirection - that syntax is only
+            # understood by io.cucumber.core.cli.Main, and silently discovers
+            # zero tests (not an error) when passed to this JUnit-Platform-based
+            # setup instead, which would make this retry a silent no-op.
+            RETRY_FEATURES=$(paste -sd, "$RERUN_FILE")
             ./mvnw -B -ntp test -Dbrowser=chrome -Dheadless=true -Denv=qa \
-              -Dcucumber.features="@$RERUN_FILE" || true
+              -Dcucumber.features="$RETRY_FEATURES" || true
           fi
 
       - name: Gate on final result
