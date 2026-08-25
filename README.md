@@ -1,6 +1,6 @@
 # referenced-automation-ui
 
-Reusable Playwright UI automation framework: a `BasePage` action layer covering navigation, element interaction, waits, frames, new tabs, downloads/uploads, and network mocking. Extend it, provide locators and input values - no raw Playwright boilerplate per page object, and every action is logged (console + `logs/automation.log` + Playwright's own step/trace report) automatically.
+Reusable Playwright UI automation framework: a `BasePage` action layer covering navigation, element interaction, waits, frames, new tabs, downloads/uploads, and network mocking, plus `BaseComponent` for widgets that repeat across several pages (a modal, a nav bar, a file-upload control). Extend them, provide locators and input values - no raw Playwright boilerplate per page object, and every action is logged (console + `logs/automation.log` + Playwright's own step/trace report) automatically.
 
 Playwright Test itself already manages browser/context/page lifecycle, retries, parallelism, and failure screenshots/video/traces declaratively via `playwright.config.ts` - this package deliberately doesn't reimplement any of that (unlike the old Selenium-based framework, which had to hand-build a DriverFactory/DriverManager/Hooks layer for exactly this). What it adds is a consistent, logged action layer on top.
 
@@ -28,12 +28,79 @@ class LoginPage extends BasePage {
     super(page);
   }
 
-  async loginAs(username: string, password: string) {
+  // Fluent navigation: an action that moves to a new page returns that
+  // page's own object, so a test chains straight into it - see
+  // "Structuring page objects" below for the full pattern.
+  async loginAs(username: string, password: string): Promise<DashboardPage> {
     await this.fill(this.username, username);
     await this.fill(this.password, password);
     await this.click(this.submit);
+    return new DashboardPage(this.page);
   }
 }
+```
+
+## Structuring page objects, components, and fixtures
+
+This is the pattern `tests/support/` in this repo follows, and the one every consuming project should copy for its own pages - see `tests/support/LoginPage.ts`, `DashboardPage.ts`, `components/FileUploadWidget.ts`, and `fixtures.ts` for the real, working versions of everything below.
+
+**One page, one page object.** Don't let a page object grow to cover more than one screen/view - `LoginPage` only knows the login form, `DashboardPage` only knows the dashboard. A method that navigates to a new page returns that page's own object (`loginAs()` returns a `DashboardPage`) instead of the caller guessing what state the app ended up in.
+
+**Repeated widgets are `BaseComponent`s, not copy-pasted locators.** A modal, a data table, a nav bar, a file-upload control that appears on several pages - model it once as a `BaseComponent` (scoped to a root `Locator` via `within()`, gets all the same logged action methods as `BasePage`) and have every page object that embeds it construct the same class, instead of every page object reimplementing that widget's interactions from scratch:
+
+```ts
+import { BaseComponent } from '@automation/referenced-automation-ui';
+import type { Locator, Page } from '@playwright/test';
+
+class FileUploadWidget extends BaseComponent {
+  private readonly fileInput = this.within('input[type="file"]');
+  private readonly fileNameLabel = this.within('#file-name');
+
+  constructor(page: Page, root: Locator) {
+    super(page, root);
+  }
+
+  async pickFile(filePath: string): Promise<void> {
+    await this.uploadFile(this.fileInput, filePath);
+  }
+}
+
+// in a page object that embeds it:
+this.fileUpload = new FileUploadWidget(page, page.locator('#dashboard-section'));
+```
+
+**Page objects are fixtures, not `new`'d in every test.** Extend this package's own `test` with one fixture per page object, so a spec destructures the page it needs already-navigated-to instead of every test repeating `new LoginPage(page)` plus whatever setup gets it into the right state:
+
+```ts
+import { test as base, expect } from '@automation/referenced-automation-ui';
+import { LoginPage } from './LoginPage';
+import { DashboardPage } from './DashboardPage';
+
+interface PageFixtures {
+  loginPage: LoginPage;
+  dashboardPage: DashboardPage; // already authenticated, for specs that don't care about the login step
+}
+
+export const test = base.extend<PageFixtures>({
+  loginPage: async ({ page }, use) => {
+    const loginPage = new LoginPage(page);
+    await loginPage.open('/login');
+    await use(loginPage);
+  },
+  dashboardPage: async ({ page }, use) => {
+    const loginPage = new LoginPage(page);
+    await loginPage.open('/login');
+    await use(await loginPage.loginAs('user', 'pass'));
+  },
+});
+export { expect };
+```
+
+```ts
+// a spec then just asks for the page it needs:
+test('shows the welcome banner', async ({ dashboardPage }) => {
+  expect(await dashboardPage.isLoaded()).toBe(true);
+});
 ```
 
 ## What's included
@@ -138,4 +205,6 @@ Same as the other repos in this family: VS Code prompts for recommended extensio
 
 ## Testing this package itself
 
-`tests/support/fixture.html` is a small, self-contained local page (login form, dropdown, checkbox, drag-and-drop, an iframe, a popup trigger, a download link, a file input) opened via a `file://` URL - deliberately not a live third-party site, so the suite is fast, deterministic, and has no external network dependency. `tests/support/DemoPage.ts` is a real page object built on `BasePage`, exercising every capability in the table above. `tests/accessibility.spec.ts` runs axe-core against the same fixture - properly labelled form controls and a titled iframe, on purpose, so the "no violations" assertions are actually meaningful rather than trivially true.
+`tests/support/fixture.html` is a small, self-contained local page (login form, dropdown, checkbox, drag-and-drop, an iframe, a popup trigger, a download link, a file input) opened via a `file://` URL - deliberately not a live third-party site, so the suite is fast, deterministic, and has no external network dependency.
+
+`tests/support/` is also the working example of [the page object/component/fixture pattern above](#structuring-page-objects-components-and-fixtures): `LoginPage.ts` and `DashboardPage.ts` are real `BasePage`s (one page each, `loginAs()` returns the next page), `components/FileUploadWidget.ts` is a real `BaseComponent`, and `fixtures.ts` wires both pages up as Playwright fixtures - `demo.spec.ts` and `accessibility.spec.ts` consume them exactly the way a consuming project's own specs would. `accessibility.spec.ts` runs axe-core against the same fixture - properly labelled form controls and a titled iframe, on purpose, so the "no violations" assertions are actually meaningful rather than trivially true.
