@@ -1,77 +1,90 @@
 import type { Page } from '@playwright/test';
-import { BasePage } from '../../src/base/BasePage';
-import { FileUploadWidget } from './components/FileUploadWidget';
+import { actions } from '../../src';
+import { createFileUploadWidget, type FileUploadWidget } from './components/FileUploadWidget';
 
 /**
  * Sample page object for the dashboard screen only - see LoginPage's
  * javadoc-style comment for why this used to be one combined class and
- * isn't anymore. Not shipped in the published package.
+ * isn't anymore, and for the composition-over-inheritance rationale. Not
+ * shipped in the published package.
  */
-export class DashboardPage extends BasePage {
-  private readonly heading = this.page.locator('#dashboard-section h1');
-  private readonly countrySelect = this.page.locator('#country');
-  private readonly subscribeCheckbox = this.page.locator('#subscribe');
-  private readonly dragSource = this.page.locator('#drag-source');
-  private readonly dropTarget = this.page.locator('#drop-target');
-  private readonly dropResult = this.page.locator('#drop-result');
-  private readonly loadItemsButton = this.page.locator('#load-items');
-  private readonly slowListItems = this.page.locator('.slow-item');
-  private readonly openTabLink = this.page.locator('#open-tab-link');
-  private readonly downloadLink = this.page.locator('#download-link');
-
+export interface DashboardPage {
+  isLoaded(): Promise<boolean>;
+  selectCountry(value: string): Promise<void>;
+  subscribe(): Promise<void>;
+  isSubscribed(): Promise<boolean>;
+  dragCardToTarget(): Promise<void>;
+  dropResultText(): Promise<string>;
+  loadSlowItems(): Promise<void>;
+  slowItemTexts(): Promise<string[]>;
+  clickInsideFrame(): Promise<string>;
+  openNewTab(): Promise<Page>;
+  downloadReport(savePath: string): Promise<string>;
   /** A composed component, not a flat set of locators - see FileUploadWidget. */
-  readonly fileUpload: FileUploadWidget;
+  fileUpload: FileUploadWidget;
+}
 
-  constructor(page: Page) {
-    super(page);
-    this.fileUpload = new FileUploadWidget(page, page.locator('#dashboard-section'));
-  }
+export function createDashboardPage(page: Page): DashboardPage {
+  const heading = page.locator('#dashboard-section h1');
+  const countrySelect = page.locator('#country');
+  const subscribeCheckbox = page.locator('#subscribe');
+  const dragSource = page.locator('#drag-source');
+  const dropTarget = page.locator('#drop-target');
+  const dropResult = page.locator('#drop-result');
+  const loadItemsButton = page.locator('#load-items');
+  const slowListItems = page.locator('.slow-item');
+  const openTabLink = page.locator('#open-tab-link');
+  const downloadLink = page.locator('#download-link');
 
-  async isLoaded(): Promise<boolean> {
-    return this.isVisible(this.heading);
-  }
+  return {
+    fileUpload: createFileUploadWidget(page, page.locator('#dashboard-section')),
 
-  async selectCountry(value: string): Promise<void> {
-    await this.selectOption(this.countrySelect, value);
-  }
+    async isLoaded() {
+      return actions.isVisible(heading);
+    },
 
-  async subscribe(): Promise<void> {
-    await this.check(this.subscribeCheckbox);
-  }
+    async selectCountry(value) {
+      await actions.selectOption(countrySelect, value);
+    },
 
-  async isSubscribed(): Promise<boolean> {
-    return this.isChecked(this.subscribeCheckbox);
-  }
+    async subscribe() {
+      await actions.check(subscribeCheckbox);
+    },
 
-  async dragCardToTarget(): Promise<void> {
-    await this.dragAndDrop(this.dragSource, this.dropTarget);
-  }
+    async isSubscribed() {
+      return actions.isChecked(subscribeCheckbox);
+    },
 
-  async dropResultText(): Promise<string> {
-    return this.getText(this.dropResult);
-  }
+    async dragCardToTarget() {
+      await actions.dragAndDrop(dragSource, dropTarget);
+    },
 
-  async loadSlowItems(): Promise<void> {
-    await this.click(this.loadItemsButton);
-    await this.waitForVisible(this.slowListItems.first());
-  }
+    async dropResultText() {
+      return actions.getText(dropResult);
+    },
 
-  async slowItemTexts(): Promise<string[]> {
-    return this.allText(this.slowListItems);
-  }
+    async loadSlowItems() {
+      await actions.click(loadItemsButton);
+      await actions.waitForVisible(slowListItems.first());
+    },
 
-  async clickInsideFrame(): Promise<string> {
-    const frame = this.frame('#content-frame');
-    await frame.locator('#inner-button').click();
-    return frame.locator('#inner-result').innerText();
-  }
+    async slowItemTexts() {
+      return actions.allText(slowListItems);
+    },
 
-  async openNewTab(): Promise<Page> {
-    return this.waitForNewTab(() => this.click(this.openTabLink));
-  }
+    async clickInsideFrame() {
+      const contentFrame = actions.frame(page, '#content-frame');
+      await contentFrame.locator('#inner-button').click();
+      return contentFrame.locator('#inner-result').innerText();
+    },
 
-  async downloadReport(savePath: string): Promise<string> {
-    const download = await this.downloadFile(() => this.click(this.downloadLink), savePath);
-    return download.suggestedFilename();
-  }
+    async openNewTab() {
+      return actions.waitForNewTab(page, () => actions.click(openTabLink));
+    },
+
+    async downloadReport(savePath) {
+      const download = await actions.downloadFile(page, () => actions.click(downloadLink), savePath);
+      return download.suggestedFilename();
+    },
+  };
 }

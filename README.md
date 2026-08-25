@@ -1,6 +1,6 @@
 # referenced-automation-ui
 
-Reusable Playwright UI automation framework: a `BasePage` action layer covering navigation, element interaction, waits, frames, new tabs, downloads/uploads, and network mocking, plus `BaseComponent` for widgets that repeat across several pages (a modal, a nav bar, a file-upload control). Extend them, provide locators and input values - no raw Playwright boilerplate per page object, and every action is logged (console + `logs/automation.log` + Playwright's own step/trace report) automatically.
+Reusable Playwright UI automation framework: an `actions` layer (`actions.click`, `actions.fill`, `actions.waitForVisible`, ...) covering navigation, element interaction, waits, frames, new tabs, downloads/uploads, and network mocking. Page objects and components are plain factory functions that call these actions against their own locators - no base classes to extend, no raw Playwright boilerplate per page object, and every action is logged (console + `logs/automation.log` + Playwright's own step/trace report) automatically.
 
 Playwright Test itself already manages browser/context/page lifecycle, retries, parallelism, and failure screenshots/video/traces declaratively via `playwright.config.ts` - this package deliberately doesn't reimplement any of that (unlike the old Selenium-based framework, which had to hand-build a DriverFactory/DriverManager/Hooks layer for exactly this). What it adds is a consistent, logged action layer on top.
 
@@ -16,27 +16,25 @@ npm run test:regression      # only @regression-tagged tests
 `setup.sh`/`setup.bat` work from a completely fresh clone of the whole repo family, in any order: this repo depends on `referenced-automation-utils`, so if `../shared-packages/automation-referenced-automation-utils-*.tgz` doesn't exist yet, setup builds it automatically from `../referenced-automation-utils` (cloning nothing on its own - that sibling repo must already be checked out next to this one). See [Distributing this package](#distributing-this-package) for the layout this assumes.
 
 ```ts
-import { BasePage } from '@automation/referenced-automation-ui';
+import { actions } from '@automation/referenced-automation-ui';
 import type { Page } from '@playwright/test';
 
-class LoginPage extends BasePage {
-  private readonly username = this.page.locator('#username');
-  private readonly password = this.page.locator('#password');
-  private readonly submit = this.page.locator('#login-button');
+export function createLoginPage(page: Page) {
+  const username = page.locator('#username');
+  const password = page.locator('#password');
+  const submit = page.locator('#login-button');
 
-  constructor(page: Page) {
-    super(page);
-  }
-
-  // Fluent navigation: an action that moves to a new page returns that
-  // page's own object, so a test chains straight into it - see
-  // "Structuring page objects" below for the full pattern.
-  async loginAs(username: string, password: string): Promise<DashboardPage> {
-    await this.fill(this.username, username);
-    await this.fill(this.password, password);
-    await this.click(this.submit);
-    return new DashboardPage(this.page);
-  }
+  return {
+    // Fluent navigation: an action that moves to a new page returns that
+    // page's own object, so a test chains straight into it - see
+    // "Structuring page objects" below for the full pattern.
+    async loginAs(user: string, pass: string): Promise<DashboardPage> {
+      await actions.fill(username, user);
+      await actions.fill(password, pass);
+      await actions.click(submit);
+      return createDashboardPage(page);
+    },
+  };
 }
 ```
 
@@ -44,37 +42,40 @@ class LoginPage extends BasePage {
 
 This is the pattern `tests/support/` in this repo follows, and the one every consuming project should copy for its own pages - see `tests/support/LoginPage.ts`, `DashboardPage.ts`, `components/FileUploadWidget.ts`, and `fixtures.ts` for the real, working versions of everything below.
 
-**One page, one page object.** Don't let a page object grow to cover more than one screen/view - `LoginPage` only knows the login form, `DashboardPage` only knows the dashboard. A method that navigates to a new page returns that page's own object (`loginAs()` returns a `DashboardPage`) instead of the caller guessing what state the app ended up in.
+Page objects here are plain factory functions, not classes - `createLoginPage(page)` returns an object literal of methods closing over its own locators. There's no base class to extend and nothing to instantiate with `new`; the function *is* the constructor. This favors Playwright's own idiom (fixtures as the composition/DI mechanism) over a Java-style class hierarchy.
 
-**Repeated widgets are `BaseComponent`s, not copy-pasted locators.** A modal, a data table, a nav bar, a file-upload control that appears on several pages - model it once as a `BaseComponent` (scoped to a root `Locator` via `within()`, gets all the same logged action methods as `BasePage`) and have every page object that embeds it construct the same class, instead of every page object reimplementing that widget's interactions from scratch:
+**One page, one page object.** Don't let a page object grow to cover more than one screen/view - `createLoginPage` only knows the login form, `createDashboardPage` only knows the dashboard. A method that navigates to a new page returns that page's own object (`loginAs()` returns a `DashboardPage`) instead of the caller guessing what state the app ended up in.
+
+**Repeated widgets are their own factory functions, not copy-pasted locators.** A modal, a data table, a nav bar, a file-upload control that appears on several pages - model it once as a component factory scoped to a root `Locator`, and have every page object that embeds it call the same function, instead of every page object reimplementing that widget's interactions from scratch:
 
 ```ts
-import { BaseComponent } from '@automation/referenced-automation-ui';
+import { actions } from '@automation/referenced-automation-ui';
 import type { Locator, Page } from '@playwright/test';
 
-class FileUploadWidget extends BaseComponent {
-  private readonly fileInput = this.within('input[type="file"]');
-  private readonly fileNameLabel = this.within('#file-name');
+export function createFileUploadWidget(page: Page, root: Locator) {
+  const fileInput = root.locator('input[type="file"]');
+  const fileNameLabel = root.locator('#file-name');
 
-  constructor(page: Page, root: Locator) {
-    super(page, root);
-  }
-
-  async pickFile(filePath: string): Promise<void> {
-    await this.uploadFile(this.fileInput, filePath);
-  }
+  return {
+    async pickFile(filePath: string): Promise<void> {
+      await actions.uploadFile(fileInput, filePath);
+    },
+    async uploadedFileName(): Promise<string> {
+      return actions.getText(fileNameLabel);
+    },
+  };
 }
 
 // in a page object that embeds it:
-this.fileUpload = new FileUploadWidget(page, page.locator('#dashboard-section'));
+const fileUpload = createFileUploadWidget(page, page.locator('#dashboard-section'));
 ```
 
-**Page objects are fixtures, not `new`'d in every test.** Extend this package's own `test` with one fixture per page object, so a spec destructures the page it needs already-navigated-to instead of every test repeating `new LoginPage(page)` plus whatever setup gets it into the right state:
+**Page objects are built inside fixtures, not in every test.** Extend this package's own `test` with one fixture per page object, so a spec destructures the page it needs already-navigated-to instead of every test repeating `createLoginPage(page)` plus whatever setup gets it into the right state. The fixture is where the object gets created - the page object module itself exports only the factory function and its interface, nothing else:
 
 ```ts
 import { test as base, expect } from '@automation/referenced-automation-ui';
-import { LoginPage } from './LoginPage';
-import { DashboardPage } from './DashboardPage';
+import { createLoginPage, type LoginPage } from './LoginPage';
+import type { DashboardPage } from './DashboardPage';
 
 interface PageFixtures {
   loginPage: LoginPage;
@@ -83,12 +84,12 @@ interface PageFixtures {
 
 export const test = base.extend<PageFixtures>({
   loginPage: async ({ page }, use) => {
-    const loginPage = new LoginPage(page);
+    const loginPage = createLoginPage(page);
     await loginPage.open('/login');
     await use(loginPage);
   },
   dashboardPage: async ({ page }, use) => {
-    const loginPage = new LoginPage(page);
+    const loginPage = createLoginPage(page);
     await loginPage.open('/login');
     await use(await loginPage.loginAs('user', 'pass'));
   },
@@ -105,19 +106,21 @@ test('shows the welcome banner', async ({ dashboardPage }) => {
 
 ## What's included
 
-| Capability | Methods |
+All of the below are standalone functions imported as `import { actions } from '@automation/referenced-automation-ui'`, called as `actions.click(locator)` / `actions.goto(page, url)` etc. - element actions take a `Locator` as their first argument, page actions take a `Page`.
+
+| Capability | Functions |
 |---|---|
 | Navigation | `goto`, `reload`, `goBack`, `goForward`, `currentUrl`, `title` |
 | Actions | `click`, `dblClick`, `rightClick`, `fill`, `type` (real keystrokes), `clear`, `check`, `uncheck`, `selectOption`, `hover`, `dragAndDrop`, `pressKey`, `focus`, `uploadFile` |
 | Reads | `getText`, `getValue`, `getAttribute`, `isVisible`, `isEnabled`, `isChecked`, `count`, `allText` |
 | Explicit waits | `waitForVisible`, `waitForHidden`, `waitForUrlContains`, `waitForLoadState`, `waitForResponseMatching` (Playwright's Locator API auto-waits on every action above already - these cover the conditions that don't) |
 | Screenshots | `screenshotPage`, `screenshotElement` (automatic on-failure screenshots are configured in `playwright.config.ts`, not something you call yourself) |
-| Frames | `frame(selector)` returns a `FrameLocator` scoped inside an iframe |
-| New tabs/popups | `waitForNewTab(action)` |
-| Downloads | `downloadFile(action, savePath)` |
+| Frames | `frame(page, selector)` returns a `FrameLocator` scoped inside an iframe |
+| New tabs/popups | `waitForNewTab(page, action)` |
+| Downloads | `downloadFile(page, action, savePath)` |
 | Uploads | `uploadFile(locator, filePaths)` |
-| Network mocking | `mockRoute(pattern, response)`, `blockRoute(pattern)`, `unrouteAll` |
-| Step visibility | Every action above is wrapped in both `test.step()` (Playwright's HTML report/trace viewer) and the shared logger (console + `logs/automation.log`, visible in CI job logs) - see `src/base/step.ts` |
+| Network mocking | `mockRoute(page, pattern, response)`, `blockRoute(page, pattern)`, `unrouteAll(page)` |
+| Step visibility | Every function above is wrapped in both `test.step()` (Playwright's HTML report/trace viewer) and the shared logger (console + `logs/automation.log`, visible in CI job logs) - see `src/base/step.ts` |
 
 ## Environments, browsers, and devices
 
@@ -170,7 +173,7 @@ const results = await checkAccessibility(page, { tags: ['wcag2aa'] });
 await expectNoAccessibilityViolations(page);
 ```
 
-Both are also available directly on `BasePage` (`this.checkAccessibility()` / `this.expectNoAccessibilityViolations()`) from any page object. `include`/`exclude` scope a scan to part of the page (e.g. skip a third-party widget you don't own); `rules`/`disableRules` add or turn off specific axe rule IDs. See `tests/accessibility.spec.ts` for working examples, including one that deliberately triggers a real violation to prove the assertion actually catches something.
+Both are plain functions taking `page` directly - no page object needed to use them, and nothing stops a page object from calling them internally if that's useful for a given test. `include`/`exclude` scope a scan to part of the page (e.g. skip a third-party widget you don't own); `rules`/`disableRules` add or turn off specific axe rule IDs. See `tests/accessibility.spec.ts` for working examples, including one that deliberately triggers a real violation to prove the assertion actually catches something.
 
 ## Allure reporting
 
@@ -207,4 +210,4 @@ Same as the other repos in this family: VS Code prompts for recommended extensio
 
 `tests/support/fixture.html` is a small, self-contained local page (login form, dropdown, checkbox, drag-and-drop, an iframe, a popup trigger, a download link, a file input) opened via a `file://` URL - deliberately not a live third-party site, so the suite is fast, deterministic, and has no external network dependency.
 
-`tests/support/` is also the working example of [the page object/component/fixture pattern above](#structuring-page-objects-components-and-fixtures): `LoginPage.ts` and `DashboardPage.ts` are real `BasePage`s (one page each, `loginAs()` returns the next page), `components/FileUploadWidget.ts` is a real `BaseComponent`, and `fixtures.ts` wires both pages up as Playwright fixtures - `demo.spec.ts` and `accessibility.spec.ts` consume them exactly the way a consuming project's own specs would. `accessibility.spec.ts` runs axe-core against the same fixture - properly labelled form controls and a titled iframe, on purpose, so the "no violations" assertions are actually meaningful rather than trivially true.
+`tests/support/` is also the working example of [the page object/component/fixture pattern above](#structuring-page-objects-components-and-fixtures): `LoginPage.ts` and `DashboardPage.ts` are real page object factory functions (one page each, `loginAs()` returns the next page), `components/FileUploadWidget.ts` is a real component factory function, and `fixtures.ts` wires both pages up as Playwright fixtures - `demo.spec.ts` and `accessibility.spec.ts` consume them exactly the way a consuming project's own specs would. `accessibility.spec.ts` runs axe-core against the same fixture - properly labelled form controls and a titled iframe, on purpose, so the "no violations" assertions are actually meaningful rather than trivially true.

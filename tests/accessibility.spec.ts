@@ -1,6 +1,5 @@
 import { test, expect } from './support/fixtures';
-import { checkAccessibility, formatViolations } from '../src/accessibility/axeHelper';
-import { LoginPage } from './support/LoginPage';
+import { checkAccessibility, expectNoAccessibilityViolations, formatViolations } from '../src/accessibility/axeHelper';
 
 test.describe('accessibility (axe-core) @regression', () => {
   test('the login form has no WCAG 2.1 AA violations', async ({ loginPage, page }) => {
@@ -15,17 +14,14 @@ test.describe('accessibility (axe-core) @regression', () => {
     expect(results.violations, formatViolations(results.violations)).toEqual([]);
   });
 
-  test('BasePage.expectNoAccessibilityViolations throws with a readable message on a real violation', async ({
-    page,
-  }) => {
+  test('expectNoAccessibilityViolations throws with a readable message on a real violation', async ({ page }) => {
     // A deliberately inaccessible fragment (image with no alt text) to prove
     // the assertion actually catches something, not just that it passes on
-    // an already-clean page. Any BasePage subclass exposes the assertion -
-    // LoginPage is used here purely as *a* BasePage, not for its login
-    // behaviour.
+    // an already-clean page. checkAccessibility/expectNoAccessibilityViolations
+    // are plain functions taking `page` directly - no page object needed to
+    // use them.
     await page.setContent('<img src="data:," />');
-    const anyPage = new LoginPage(page);
 
-    await expect(anyPage.expectNoAccessibilityViolations()).rejects.toThrow(/image-alt/);
+    await expect(expectNoAccessibilityViolations(page)).rejects.toThrow(/image-alt/);
   });
 });
