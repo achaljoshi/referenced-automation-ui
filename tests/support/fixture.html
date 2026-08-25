@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Framework Demo Fixture</title>
+</head>
+<body>
+  <section id="login-section">
+    <h1>Login</h1>
+    <input id="username" placeholder="Username" />
+    <input id="password" type="password" placeholder="Password" />
+    <button id="login-button">Log in</button>
+    <p id="login-error" style="display: none; color: red;">Invalid credentials</p>
+  </section>
+
+  <section id="dashboard-section" style="display: none;">
+    <h1>Dashboard</h1>
+
+    <select id="country">
+      <option value="">Choose...</option>
+      <option value="us">United States</option>
+      <option value="uk">United Kingdom</option>
+      <option value="in">India</option>
+    </select>
+
+    <label><input type="checkbox" id="subscribe" /> Subscribe</label>
+
+    <div id="drag-source" draggable="true" style="width:80px;height:40px;background:#ccc;">Drag me</div>
+    <div id="drop-target" style="width:120px;height:60px;border:1px dashed #333;">Drop here</div>
+    <p id="drop-result"></p>
+
+    <div id="slow-list-container">
+      <button id="load-items">Load items</button>
+      <ul id="slow-list"></ul>
+    </div>
+
+    <iframe id="content-frame" srcdoc="<button id='inner-button' onclick=&quot;document.getElementById('inner-result').textContent='clicked inside frame'&quot;>Click inside frame</button><p id='inner-result'></p>"></iframe>
+
+    <a id="open-tab-link" href="#" onclick="window.open('about:blank', '_blank'); return false;">Open new tab</a>
+
+    <a id="download-link" href="#" download="report.txt">Download report</a>
+
+    <input type="file" id="file-input" />
+    <p id="file-name"></p>
+  </section>
+
+  <script>
+    document.getElementById('login-button').addEventListener('click', () => {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      if (username === 'ada' && password === 'secret') {
+        document.getElementById('login-section').style.display = 'none';
+        document.getElementById('dashboard-section').style.display = 'block';
+      } else {
+        document.getElementById('login-error').style.display = 'block';
+      }
+    });
+
+    document.getElementById('load-items').addEventListener('click', () => {
+      setTimeout(() => {
+        const list = document.getElementById('slow-list');
+        ['Item 1', 'Item 2', 'Item 3'].forEach((text) => {
+          const li = document.createElement('li');
+          li.textContent = text;
+          li.className = 'slow-item';
+          list.appendChild(li);
+        });
+      }, 300);
+    });
+
+    const dropTarget = document.getElementById('drop-target');
+    const dragSource = document.getElementById('drag-source');
+    dragSource.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', 'dragged'));
+    dropTarget.addEventListener('dragover', (e) => e.preventDefault());
+    dropTarget.addEventListener('drop', (e) => {
+      e.preventDefault();
+      document.getElementById('drop-result').textContent = 'dropped';
+    });
+
+    document.getElementById('download-link').addEventListener('click', (e) => {
+      const blob = new Blob(['hello from the report'], { type: 'text/plain' });
+      e.target.href = URL.createObjectURL(blob);
+    });
+
+    document.getElementById('file-input').addEventListener('change', (e) => {
+      document.getElementById('file-name').textContent = e.target.files[0]?.name ?? '';
+    });
+  </script>
+</body>
+</html>

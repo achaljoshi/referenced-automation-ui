@@ -1,0 +1,49 @@
+{
+  "name": "@automation/referenced-automation-ui",
+  "version": "1.0.0",
+  "description": "Reusable Playwright UI automation framework: a BasePage action layer covering navigation, element interaction, waits, frames/tabs/downloads, and network mocking - call a method, provide the input, done.",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rimraf dist *.tgz",
+    "lint": "eslint . --ext .ts",
+    "test": "playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:regression": "playwright test --grep @regression",
+    "pretest": "npm run build",
+    "prepack": "npm run build",
+    "install:browsers": "playwright install --with-deps chromium firefox webkit"
+  },
+  "dependencies": {
+    "@automation/referenced-automation-utils": "file:../shared-packages/automation-referenced-automation-utils-1.0.0.tgz"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.19.1",
+    "@typescript-eslint/parser": "^8.19.1",
+    "eslint": "^8.57.1",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.3"
+  }
+}
