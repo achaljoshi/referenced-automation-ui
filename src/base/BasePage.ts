@@ -1,5 +1,11 @@
 import type { Download, FrameLocator, Locator, Page, Response } from '@playwright/test';
+import type { AxeResults } from 'axe-core';
 import { logger } from '@automation/referenced-automation-utils';
+import {
+  checkAccessibility,
+  expectNoAccessibilityViolations,
+  type AccessibilityCheckOptions,
+} from '../accessibility/axeHelper';
 import { step as loggedStep } from './step';
 
 /**
@@ -239,6 +245,18 @@ export abstract class BasePage {
 
   async unrouteAll(): Promise<void> {
     await this.page.unrouteAll();
+  }
+
+  // ---- accessibility ----
+
+  /** Runs an axe-core scan of the current page and returns the full results. */
+  async checkAccessibility(options?: AccessibilityCheckOptions): Promise<AxeResults> {
+    return checkAccessibility(this.page, options);
+  }
+
+  /** Runs an axe-core scan and throws a readable, per-violation error if any are found. */
+  async expectNoAccessibilityViolations(options?: AccessibilityCheckOptions): Promise<void> {
+    return expectNoAccessibilityViolations(this.page, options);
   }
 }
 

@@ -7,7 +7,9 @@
 <body>
   <section id="login-section">
     <h1>Login</h1>
+    <label for="username">Username</label>
     <input id="username" placeholder="Username" />
+    <label for="password">Password</label>
     <input id="password" type="password" placeholder="Password" />
     <button id="login-button">Log in</button>
     <p id="login-error" style="display: none; color: red;">Invalid credentials</p>
@@ -16,6 +18,7 @@
   <section id="dashboard-section" style="display: none;">
     <h1>Dashboard</h1>
 
+    <label for="country">Country</label>
     <select id="country">
       <option value="">Choose...</option>
       <option value="us">United States</option>
@@ -34,12 +37,13 @@
       <ul id="slow-list"></ul>
     </div>
 
-    <iframe id="content-frame" srcdoc="<button id='inner-button' onclick=&quot;document.getElementById('inner-result').textContent='clicked inside frame'&quot;>Click inside frame</button><p id='inner-result'></p>"></iframe>
+    <iframe id="content-frame" title="Embedded content demo" srcdoc="<button id='inner-button' onclick=&quot;document.getElementById('inner-result').textContent='clicked inside frame'&quot;>Click inside frame</button><p id='inner-result'></p>"></iframe>
 
     <a id="open-tab-link" href="#" onclick="window.open('about:blank', '_blank'); return false;">Open new tab</a>
 
     <a id="download-link" href="#" download="report.txt">Download report</a>
 
+    <label for="file-input">Upload a file</label>
     <input type="file" id="file-input" />
     <p id="file-name"></p>
   </section>

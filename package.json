@@ -32,7 +32,8 @@
     "allure:report": "npm run allure:generate && npm run allure:open"
   },
   "dependencies": {
-    "@automation/referenced-automation-utils": "file:../shared-packages/automation-referenced-automation-utils-1.0.0.tgz"
+    "@automation/referenced-automation-utils": "file:../shared-packages/automation-referenced-automation-utils-1.0.0.tgz",
+    "@axe-core/playwright": "^4.13.0"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.40.0"
