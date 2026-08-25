@@ -13,6 +13,8 @@ npm run test:smoke           # only @smoke-tagged tests
 npm run test:regression      # only @regression-tagged tests
 ```
 
+`setup.sh`/`setup.bat` work from a completely fresh clone of the whole repo family, in any order: this repo depends on `referenced-automation-utils`, so if `../shared-packages/automation-referenced-automation-utils-*.tgz` doesn't exist yet, setup builds it automatically from `../referenced-automation-utils` (cloning nothing on its own - that sibling repo must already be checked out next to this one). See [Distributing this package](#distributing-this-package) for the layout this assumes.
+
 ```ts
 import { BasePage } from '@automation/referenced-automation-ui';
 import type { Page } from '@playwright/test';
