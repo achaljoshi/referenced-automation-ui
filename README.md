@@ -60,6 +60,17 @@ Same `.env.<name>` + `ENV=<name>` pattern as the rest of this family (see `refer
 ENV=stage BROWSER=firefox HEADLESS=false npx playwright test
 ```
 
+## Allure reporting
+
+Every test run writes raw results to `allure-results/` via the `allure-playwright` reporter (pure JS/TS, no extra runtime needed). Turning those into the viewable HTML report needs a JRE on `PATH` (Allure's report generator is a Java tool) - that's why it's a separate step, not part of `npm test` itself:
+
+```bash
+npm test               # also writes allure-results/
+npm run allure:report  # generates allure-report/ and opens it in a browser
+```
+
+Or split the two steps (e.g. to generate in CI and open locally): `npm run allure:generate`, then `npm run allure:open`.
+
 ## Distributing this package
 
 ```bash
