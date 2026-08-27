@@ -5,21 +5,77 @@
 # every merge request, and manual "Run pipeline" from the GitLab UI - see
 # the `workflow:` block below.
 #
-# Dependency note: this repo depends on referenced-automation-utils, not
-# yet published to a registry - see that repo's README for why (local
-# npm-pack distribution until Nexus/Artifactory is wired up for this
-# family's own packages). The `build` stage below clones it fresh and
-# packages it with its own scripts/create-package.sh, the exact same
-# script a developer runs locally, so CI and local setup never diverge.
+# ---- Restricted-network setup: read this before your first run ----
+#
+# `mcr.microsoft.com` and the public npm registry are not reachable from
+# this network - every image and package this pipeline needs has to come
+# from your org's JFrog Artifactory instead. Two CI/CD variables make that
+# work (Settings > CI/CD > Variables in this project, or set at group
+# level so every repo in the family shares them):
+#
+#   NPM_REGISTRY_URL            Your Artifactory npm registry URL (the same
+#                                one already configured in your local
+#                                ~/.npmrc / npm config - this pipeline never
+#                                hardcodes it, just reads it from the
+#                                variable). If unset, `npm ci` falls back to
+#                                npm's normal default registry, which will
+#                                fail here - so this one is effectively
+#                                required.
+#   PLAYWRIGHT_DOWNLOAD_HOST     Optional. Only set this if your Artifactory
+#                                also mirrors Playwright's browser-binary
+#                                CDN (a "generic remote repository" pointed
+#                                at playwright.azureedge.net, in Artifactory
+#                                terms). Leave unset to let Playwright try
+#                                its real CDN directly - some networks allow
+#                                that one host through even when general
+#                                internet access is blocked.
+#
+# `image:` below is the Playwright Docker image mirrored into this org's
+# JFrog Artifactory (see Administration > Artifactory > Packages in your
+# instance) - confirmed reachable, unlike mcr.microsoft.com. It's used only
+# as a Node.js + Ubuntu Jammy base with the OS-level libraries browsers
+# need already installed - NOT as the source of the browsers themselves.
+# The version baked into that image (v1.47.0) does not have to match this
+# repo's own @playwright/test version (kept at whatever package.json
+# already pins, e.g. 1.62.1, unchanged for CI's sake) - every job below
+# runs `npx playwright install` itself, after `npm ci`, to fetch browser
+# binaries that actually match whatever version npm just installed.
+# Running a Playwright driver against browsers built for a different
+# Playwright version is exactly the kind of mismatch that fails in
+# confusing, hard-to-debug ways - installing fresh every run avoids ever
+# needing to keep an image tag and a package.json version in sync by hand.
+# `--with-deps` is deliberately NOT used - that flag also apt-get installs
+# OS packages, which needs its own network path to a Debian/Ubuntu mirror.
+# The image already has everything the browsers need at the OS level, so
+# a plain `playwright install <browser>` (binaries only) is enough and
+# avoids that extra network dependency.
+#
+# If the `npx playwright install` step fails with a network error, that's
+# the concrete signal that this network has no reachable path to a
+# Playwright browser source at all - at that point either ask your
+# platform team for a PLAYWRIGHT_DOWNLOAD_HOST mirror, or for a Docker
+# image tag in Artifactory whose baked-in browser version actually matches
+# this repo's @playwright/test version, so CI can rely on the image's own
+# browsers instead of installing fresh.
+#
+# ---- Cross-repo dependency note ----
+#
+# This repo depends on referenced-automation-utils, not yet published to a
+# registry - see that repo's README for why (local npm-pack distribution
+# until a private npm registry is wired up for this family's own
+# packages, as opposed to the public npm packages this pipeline pulls via
+# Artifactory above). The `build` stage below clones it fresh and packages
+# it with its own scripts/create-package.sh, the exact same script a
+# developer runs locally, so CI and local setup never diverge.
 #
 # This assumes referenced-automation-utils lives in the same GitLab
 # group/namespace as this repo (a common layout for a repo family) and is
 # reachable with this job's own CI_JOB_TOKEN. If your org's GitLab layout
-# differs, override UTILS_REPO_URL as a CI/CD variable (Settings > CI/CD >
-# Variables) instead of editing this file.
+# differs, override UTILS_REPO_URL as a CI/CD variable instead of editing
+# this file.
 # ============================================================================
 
-image: mcr.microsoft.com/playwright:v1.62.1-noble
+image: csg-cst-docker-local.artifactory.alm.corp.hmrc.gov.uk:443/common/microsoft/playwright:v1.47.0-jammy
 
 workflow:
   rules:
@@ -41,6 +97,12 @@ cache:
   key: "${CI_COMMIT_REF_SLUG}-npm"
   paths:
     - .npm-cache/
+
+before_script:
+  # Every `npm ci`/`npm install` in every job below goes through Artifactory
+  # once this is set - see the NPM_REGISTRY_URL note at the top of this file.
+  - if [ -n "${NPM_REGISTRY_URL:-}" ]; then npm config set registry "$NPM_REGISTRY_URL"; fi
+  - if [ -n "${PLAYWRIGHT_DOWNLOAD_HOST:-}" ]; then export PLAYWRIGHT_DOWNLOAD_HOST; fi
 
 .package_utils_dependency: &package_utils_dependency
   - SHARED_PACKAGES_DIR="$(realpath "${CI_PROJECT_DIR}/../shared-packages")"
@@ -69,6 +131,7 @@ test:
   script:
     - *package_utils_dependency
     - npm ci
+    - npx playwright install "$BROWSER"
     - HEADLESS=true npm test
   artifacts:
     when: always
@@ -87,6 +150,7 @@ accessibility:
   script:
     - *package_utils_dependency
     - npm ci
+    - npx playwright install chromium
     - HEADLESS=true npx playwright test tests/accessibility.spec.ts
   artifacts:
     when: always
@@ -97,7 +161,9 @@ accessibility:
 
 pages:
   stage: report
-  image: node:20-slim
+  # Reuses the same image as every other job (rather than node:20-slim) -
+  # anything not mirrored into Artifactory fails to pull on this network,
+  # and this image already has Node.js, so there's no need for a second one.
   needs: ["test", "accessibility"]
   script:
     - npm install -g allure-commandline --silent
