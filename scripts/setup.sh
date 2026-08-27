@@ -37,6 +37,9 @@ ensure_package() {
 
 echo "== Ensuring dependency packages exist in ${SHARED_PACKAGES_DIR} =========="
 ensure_package referenced-automation-utils
+# api is a devDependency only (used by tests/apiIntegration.spec.ts to demo
+# mockApiRoute/MockServer) - not part of this package's own dist/exports.
+ensure_package referenced-automation-api
 
 echo ""
 echo "== Installing dependencies =========================================="

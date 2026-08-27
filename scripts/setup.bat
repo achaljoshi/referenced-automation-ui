@@ -18,6 +18,10 @@ set "SHARED_PACKAGES_DIR=..\shared-packages"
 echo == Ensuring dependency packages exist in %SHARED_PACKAGES_DIR% ==========
 call :ensure_package referenced-automation-utils
 if errorlevel 1 exit /b 1
+REM api is a devDependency only (used to demo mockApiRoute/MockServer) - not
+REM part of this package's own dist/exports.
+call :ensure_package referenced-automation-api
+if errorlevel 1 exit /b 1
 
 echo.
 echo == Installing dependencies ==========================================
