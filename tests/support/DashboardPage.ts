@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { actions } from '../../src';
+import { actions, locators } from '../../src';
 import { createFileUploadWidget, type FileUploadWidget } from './components/FileUploadWidget';
 
 /**
@@ -25,16 +25,20 @@ export interface DashboardPage {
 }
 
 export function createDashboardPage(page: Page): DashboardPage {
-  const heading = page.locator('#dashboard-section h1');
-  const countrySelect = page.locator('#country');
-  const subscribeCheckbox = page.locator('#subscribe');
+  const heading = locators.role.heading(page, 'Dashboard');
+  const countrySelect = locators.role.combobox(page, 'Country');
+  const subscribeCheckbox = locators.role.checkbox(page, 'Subscribe');
+  // drag-source/drop-target/drop-result are plain, non-interactive <div>/<p>
+  // elements with no ARIA role or accessible name of their own - a raw CSS
+  // locator is the right tool here, not a forced getByRole/getByText.
   const dragSource = page.locator('#drag-source');
   const dropTarget = page.locator('#drop-target');
   const dropResult = page.locator('#drop-result');
-  const loadItemsButton = page.locator('#load-items');
-  const slowListItems = page.locator('.slow-item');
-  const openTabLink = page.locator('#open-tab-link');
-  const downloadLink = page.locator('#download-link');
+  const loadItemsButton = locators.role.button(page, 'Load items');
+  // <li> inside <ul> gets the implicit ARIA role "listitem" for free.
+  const slowListItems = locators.role.listitem(page);
+  const openTabLink = locators.role.link(page, 'Open new tab');
+  const downloadLink = locators.role.link(page, 'Download report');
 
   return {
     fileUpload: createFileUploadWidget(page, page.locator('#dashboard-section')),
@@ -73,8 +77,10 @@ export function createDashboardPage(page: Page): DashboardPage {
     },
 
     async clickInsideFrame() {
+      // Role locators scope into a FrameLocator exactly like they scope
+      // into a Locator - locators.role.* isn't page-only.
       const contentFrame = actions.frame(page, '#content-frame');
-      await contentFrame.locator('#inner-button').click();
+      await locators.role.button(contentFrame, 'Click inside frame').click();
       return contentFrame.locator('#inner-result').innerText();
     },
 

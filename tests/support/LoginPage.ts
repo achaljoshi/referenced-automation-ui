@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { actions } from '../../src';
+import { actions, locators } from '../../src';
 import { createDashboardPage, type DashboardPage } from './DashboardPage';
 
 /**
@@ -10,6 +10,12 @@ import { createDashboardPage, type DashboardPage } from './DashboardPage';
  * A plain factory function, not a class: locators and page-specific
  * behaviour are composed from the framework's `actions` functions via
  * closures, rather than inherited from a base class. One page, one factory.
+ *
+ * Locators prefer `locators.role.*`/`locators.byLabel`/`locators.byText`
+ * over raw CSS ids wherever the element has real ARIA semantics - the same
+ * thing Playwright's own getByRole()/getByLabel() give you, just with
+ * per-role autocomplete. A raw `page.locator(...)` is only for elements
+ * with no meaningful accessible name/role of their own.
  */
 export interface LoginPage {
   open(fixtureUrl: string): Promise<void>;
@@ -26,10 +32,14 @@ export interface LoginPage {
 }
 
 export function createLoginPage(page: Page): LoginPage {
-  const usernameInput = page.locator('#username');
-  const passwordInput = page.locator('#password');
-  const loginButton = page.locator('#login-button');
-  const loginError = page.locator('#login-error');
+  const usernameInput = locators.role.textbox(page, 'Username');
+  // Not locators.role.textbox: input[type=password] has no corresponding
+  // ARIA role (browsers deliberately don't expose it as a plain textbox),
+  // so byLabel - which matches via the <label> association, not a role -
+  // is the reliable way to find it.
+  const passwordInput = locators.byLabel(page, 'Password');
+  const loginButton = locators.role.button(page, 'Log in');
+  const loginError = locators.byText(page, 'Invalid credentials');
 
   async function attemptLogin(username: string, password: string): Promise<void> {
     await actions.fill(usernameInput, username);

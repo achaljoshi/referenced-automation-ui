@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import { actions } from '../../../src';
+import { actions, locators } from '../../../src';
 
 /**
  * A reusable "pick a file, see its name confirmed" widget. In this small
@@ -15,8 +15,12 @@ export interface FileUploadWidget {
 }
 
 export function createFileUploadWidget(page: Page, root: Locator): FileUploadWidget {
-  const fileInput = root.locator('input[type="file"]');
-  const fileNameLabel = root.locator('#file-name');
+  // byLabel, not a role locator: file inputs' ARIA role varies across
+  // browsers, but the <label for="file-input"> association is reliable
+  // regardless - and locators.byLabel/byRole/etc. all scope into a plain
+  // Locator (root) exactly like they scope into a Page.
+  const fileInput = locators.byLabel(root, 'Upload a file');
+  const fileNameLabel = root.locator('#file-name'); // plain <p>, no accessible name of its own
   void page; // kept in the signature for parity with other component factories that do need the Page directly
 
   return {

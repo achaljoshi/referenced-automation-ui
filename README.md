@@ -1,6 +1,6 @@
 # referenced-automation-ui
 
-Reusable Playwright UI automation framework: an `actions` layer (`actions.click`, `actions.fill`, `actions.waitForVisible`, ...) covering navigation, element interaction, waits, frames, new tabs, downloads/uploads, and network mocking. Page objects and components are plain factory functions that call these actions against their own locators - no base classes to extend, no raw Playwright boilerplate per page object, and every action is logged (console + `logs/automation.log` + Playwright's own step/trace report) automatically.
+Reusable Playwright UI automation framework: an `actions` layer (`actions.click`, `actions.fill`, `actions.waitForVisible`, ...) covering navigation, element interaction, waits, frames, new tabs, downloads/uploads, and network mocking; a `locators` layer (`locators.role.button`, `locators.byLabel`, ...) for Playwright's modern, accessibility-first locators - full `getByRole()` with every ARIA role as its own shorthand, regex/exact matching, and every other `getBy*` locator - instead of falling back to CSS/XPath the way a Selenium-style framework would; and an `assertions` layer wrapping Playwright's full `expect(locator)`/`expect(page)` assertion API with the same logging. Page objects and components are plain factory functions that compose all three - no base classes to extend, no raw Playwright boilerplate per page object, and every action/assertion is logged (console + `logs/automation.log` + Playwright's own step/trace report) automatically.
 
 Playwright Test itself already manages browser/context/page lifecycle, retries, parallelism, and failure screenshots/video/traces declaratively via `playwright.config.ts` - this package deliberately doesn't reimplement any of that (unlike the old Selenium-based framework, which had to hand-build a DriverFactory/DriverManager/Hooks layer for exactly this). What it adds is a consistent, logged action layer on top.
 
@@ -16,13 +16,13 @@ npm run test:regression      # only @regression-tagged tests
 `setup.sh`/`setup.bat` work from a completely fresh clone of the whole repo family, in any order: this repo depends on `referenced-automation-utils`, so if `../shared-packages/automation-referenced-automation-utils-*.tgz` doesn't exist yet, setup builds it automatically from `../referenced-automation-utils` (cloning nothing on its own - that sibling repo must already be checked out next to this one). See [Distributing this package](#distributing-this-package) for the layout this assumes.
 
 ```ts
-import { actions } from '@automation/referenced-automation-ui';
+import { actions, locators } from '@automation/referenced-automation-ui';
 import type { Page } from '@playwright/test';
 
 export function createLoginPage(page: Page) {
-  const username = page.locator('#username');
-  const password = page.locator('#password');
-  const submit = page.locator('#login-button');
+  const username = locators.role.textbox(page, 'Username');
+  const password = locators.byLabel(page, 'Password'); // input[type=password] has no ARIA role - match by its <label> instead
+  const submit = locators.role.button(page, 'Log in');
 
   return {
     // Fluent navigation: an action that moves to a new page returns that
@@ -49,12 +49,12 @@ Page objects here are plain factory functions, not classes - `createLoginPage(pa
 **Repeated widgets are their own factory functions, not copy-pasted locators.** A modal, a data table, a nav bar, a file-upload control that appears on several pages - model it once as a component factory scoped to a root `Locator`, and have every page object that embeds it call the same function, instead of every page object reimplementing that widget's interactions from scratch:
 
 ```ts
-import { actions } from '@automation/referenced-automation-ui';
+import { actions, locators } from '@automation/referenced-automation-ui';
 import type { Locator, Page } from '@playwright/test';
 
 export function createFileUploadWidget(page: Page, root: Locator) {
-  const fileInput = root.locator('input[type="file"]');
-  const fileNameLabel = root.locator('#file-name');
+  const fileInput = locators.byLabel(root, 'Upload a file'); // scoped to root, same as page.locator would be
+  const fileNameLabel = root.locator('#file-name'); // a plain element with no accessible name - CSS is the right tool here
 
   return {
     async pickFile(filePath: string): Promise<void> {
@@ -121,6 +121,75 @@ All of the below are standalone functions imported as `import { actions } from '
 | Uploads | `uploadFile(locator, filePaths)` |
 | Network mocking | `mockRoute(page, pattern, response)`, `blockRoute(page, pattern)`, `unrouteAll(page)` |
 | Step visibility | Every function above is wrapped in both `test.step()` (Playwright's HTML report/trace viewer) and the shared logger (console + `logs/automation.log`, visible in CI job logs) - see `src/base/step.ts` |
+
+## Locators: `getByRole()` and friends, not CSS/XPath
+
+`import { locators } from '@automation/referenced-automation-ui'`. The point of this layer is to make Playwright's own accessibility-first locators (`getByRole`, `getByText`, `getByLabel`, ...) the path of least resistance, instead of every page object reaching for `page.locator('#some-id')` the way a Selenium-based framework has to. Every function here takes a `Scope` - a `Page`, a `Locator` (to search inside a component's own root), or a `FrameLocator` (to search inside an iframe) - as its first argument, so the exact same call works whether you're searching the whole page or scoping into something narrower.
+
+### `locators.role.*` - one function per ARIA role
+
+```ts
+locators.role.button(page, 'Submit')
+locators.role.button(page, 'Submit', { exact: true })   // full, case-sensitive match instead of substring
+locators.role.button(page, /submit/i)                    // RegExp - matches the pattern, exact is ignored
+locators.role.checkbox(page, 'Accept terms', { checked: true })
+locators.role.heading(page, 'Welcome', { level: 1 })      // <h1>, or anything with aria-level="1"
+locators.role.tab(page, 'Settings', { selected: true })
+locators.role.option(page, 'United Kingdom', { exact: true })
+locators.role.listitem(frameLocator)                       // no name - matches every item; scoped into an iframe here
+```
+
+There's one shorthand for every role Playwright's `getByRole()` itself recognizes (`button`, `checkbox`, `combobox`, `heading`, `link`, `listitem`, `tab`, `textbox`, ... 82 in total) - the full list is `ARIA_ROLES`/`AriaRole` from `locators`, generated straight from Playwright's own role union so it can't drift out of sync. Every shorthand takes the same three things `getByRole()` itself does:
+
+| Argument | Type | Behavior |
+|---|---|---|
+| `name` (2nd arg) | `string \| RegExp` | A string matches case-insensitively as a substring; a RegExp matches its pattern. Omit it to match every element with that role. |
+| `options.exact` | `boolean` | Forces `name` to match the full string, case-sensitively. Ignored when `name` is a RegExp. |
+| `options.checked` / `disabled` / `expanded` / `pressed` / `selected` | `boolean` | The matching ARIA state attribute (`aria-checked`, `aria-disabled`, ...). |
+| `options.level` | `number` | `aria-level` - heading level, list/tree nesting depth. |
+| `options.description` | `string \| RegExp` | Matches the accessible description, same substring/RegExp/exact rules as `name`. |
+| `options.includeHidden` | `boolean` | Also matches elements normally excluded from the accessibility tree. |
+
+`locators.byRole(scope, role, options)` is the same thing without the per-role shorthand, for when the role is dynamic/computed rather than a literal you'd type.
+
+### The rest of Playwright's `getBy*` family
+
+```ts
+locators.byText(page, 'Invalid credentials')       // visible text content
+locators.byLabel(page, 'Password')                 // a form control by its <label> - works even when the control has no useful ARIA role (e.g. input[type=password])
+locators.byPlaceholder(page, 'Search...')
+locators.byAltText(page, 'Company logo')
+locators.byTitle(page, 'Close')                     // title attribute
+locators.byTestId(page, 'submit-button')            // data-testid (or playwright.config.ts's testIdAttribute)
+```
+
+All but `byTestId` accept the same `{ exact?: boolean }` as `locators.role.*`'s `name`.
+
+**When to still use a raw `page.locator('#id')` or CSS selector:** when the element genuinely has no accessible role, label, text, or test id of its own - a bare `<div>` used as a drag handle, a decorative container. Don't force a role locator onto something that has no real ARIA semantics; `tests/support/DashboardPage.ts` shows both cases side by side (role locators for the interactive controls, a couple of plain CSS locators for two unlabelled `<div>`s used only as drag source/target).
+
+## Assertions: the full `expect()` surface, logged like everything else
+
+`import { assertions } from '@automation/referenced-automation-ui'`. Thin, logged wrappers around Playwright's own auto-retrying `expect(locator)`/`expect(page)` - so a spec reads as one consistent stream of steps instead of mixing `actions.foo()`/`locators.bar()` calls with bare `expect(...)` calls:
+
+```ts
+await assertions.toBeVisible(locators.role.heading(page, 'Dashboard'));
+await assertions.toHaveValue(locators.role.combobox(page, 'Country'), 'uk');
+await assertions.toHaveCount(locators.role.listitem(page), 3);
+await assertions.toHaveText(locators.role.listitem(page), ['Item 1', 'Item 2', 'Item 3']);
+await assertions.toHaveTitle(page, 'Dashboard - MyApp');
+await assertions.not.toBeChecked(locators.role.checkbox(page, 'Subscribe'));
+```
+
+| Category | Functions |
+|---|---|
+| State | `toBeAttached`, `toBeVisible`, `toBeHidden`, `toBeEnabled`, `toBeDisabled`, `toBeChecked`, `toBeEditable`, `toBeEmpty`, `toBeFocused`, `toBeInViewport` |
+| Content | `toContainText`, `toHaveText`, `toHaveValue`, `toHaveValues` |
+| Attributes/properties/style | `toHaveAttribute` (with or without an expected value - the second form asserts presence only), `toHaveClass`, `toContainClass`, `toHaveCSS`, `toHaveId`, `toHaveJSProperty`, `toHaveCount` |
+| Accessibility | `toHaveRole`, `toHaveAccessibleName`, `toHaveAccessibleDescription`, `toHaveAccessibleErrorMessage` |
+| Page-level | `toHaveTitle(page, ...)`, `toHaveURL(page, ...)` |
+| Negated | `assertions.not.*` - the same names, for the dozen or so most commonly negated cases (`toBeVisible`, `toBeChecked`, `toHaveText`, `toHaveAttribute`, `toHaveCount`, `toHaveTitle`, ...) |
+
+Every function accepts an `options.timeout` to override the assertion timeout for that call. `toHaveScreenshot`/`toMatchAriaSnapshot` (visual/snapshot baselines) and the rarer `signal` (AbortSignal) option aren't wrapped - call `expect(locator)`/`expect(page)` directly for those; nothing here hides or replaces Playwright's real `expect`, these are just the common path made consistent with the rest of the framework's logging.
 
 ## Environments, browsers, and devices
 

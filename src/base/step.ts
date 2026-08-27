@@ -4,8 +4,9 @@ import { logger } from '@automation/referenced-automation-utils';
 /**
  * Wraps an action in both Playwright's own test.step() (shows up as a step
  * in the HTML report and trace viewer) and the shared logger (console +
- * logs/automation.log, visible in raw CI job logs too) - every BasePage
- * action goes through this so both views stay in sync automatically.
+ * logs/automation.log, visible in raw CI job logs too) - every actions.*
+ * and assertions.* call goes through this so both views stay in sync
+ * automatically.
  */
 export function step<T>(name: string, action: () => Promise<T> | T): Promise<T> {
   return test.step(name, async () => {
