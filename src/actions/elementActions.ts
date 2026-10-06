@@ -1,4 +1,4 @@
-import type { Locator } from '@playwright/test';
+import { expect, type Locator } from '@playwright/test';
 import { logger } from '@automation/referenced-automation-utils';
 import { step } from '../base/step';
 
@@ -89,23 +89,58 @@ export async function getAttribute(locator: Locator, name: string): Promise<stri
   return locator.getAttribute(name);
 }
 
-export async function isVisible(locator: Locator): Promise<boolean> {
-  return locator.isVisible();
+/**
+ * State reads: "is it in this state?" - and they WAIT for it, which is what
+ * makes page objects built on them work without a `wait` anywhere.
+ *
+ * Playwright's own `locator.isVisible()` / `isChecked()` / `count()` answer
+ * instantly with whatever the page looks like at that exact moment, so
+ * `if (await isVisible(x))` right after a click is a race against the app's
+ * rendering. These versions wait up to the configured assertion timeout
+ * (`EXPECT_TIMEOUT_MS`, default 10s) for the element to reach the state, and
+ * return as soon as it does - a page that is already there costs nothing.
+ *
+ * The flip side: if the state never arrives they take the full timeout to
+ * answer `false` / `0` / `[]`. For "should NOT be there" checks use
+ * `assertions.toBeHidden` / `assertions.not.*` (they return the moment it's
+ * gone), or pass `{ timeout: 0 }` for a true instant snapshot.
+ */
+export interface StateReadOptions {
+  /** How long to wait for the state to arrive. Defaults to the configured assertion timeout; 0 = look once, don't wait. */
+  timeout?: number;
 }
 
-export async function isEnabled(locator: Locator): Promise<boolean> {
-  return locator.isEnabled();
+async function reaches(assertion: (timeout: number | undefined) => Promise<void>, options?: StateReadOptions): Promise<boolean> {
+  try {
+    // timeout 0 would mean "no timeout" to Playwright's expect, so a snapshot is a 1ms look instead.
+    await assertion(options?.timeout === 0 ? 1 : options?.timeout);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export async function isChecked(locator: Locator): Promise<boolean> {
-  return locator.isChecked();
+export async function isVisible(locator: Locator, options?: StateReadOptions): Promise<boolean> {
+  return reaches((timeout) => expect(locator).toBeVisible({ timeout }), options);
 }
 
-export async function count(locator: Locator): Promise<number> {
+export async function isEnabled(locator: Locator, options?: StateReadOptions): Promise<boolean> {
+  return reaches((timeout) => expect(locator).toBeEnabled({ timeout }), options);
+}
+
+export async function isChecked(locator: Locator, options?: StateReadOptions): Promise<boolean> {
+  return reaches((timeout) => expect(locator).toBeChecked({ timeout }), options);
+}
+
+/** Number of matching elements - waits for at least one to appear; returns 0 if none does within the timeout. */
+export async function count(locator: Locator, options?: StateReadOptions): Promise<number> {
+  await reaches((timeout) => expect(locator.first()).toBeAttached({ timeout }), options);
   return locator.count();
 }
 
-export async function allText(locator: Locator): Promise<string[]> {
+/** Text of every matching element - waits for at least one to appear; returns [] if none does within the timeout. */
+export async function allText(locator: Locator, options?: StateReadOptions): Promise<string[]> {
+  await reaches((timeout) => expect(locator.first()).toBeAttached({ timeout }), options);
   return locator.allInnerTexts();
 }
 

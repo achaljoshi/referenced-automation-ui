@@ -39,7 +39,7 @@ export async function waitForUrlContains(page: Page, fragment: string, timeoutMs
 
 export async function waitForLoadState(
   page: Page,
-  state: 'load' | 'domcontentloaded' | 'networkidle' = 'load',
+  state: 'load' | 'domcontentloaded' = 'load', // no 'networkidle': it never settles on pages that poll/stream - wait for the specific element/state instead
 ): Promise<void> {
   await page.waitForLoadState(state);
 }

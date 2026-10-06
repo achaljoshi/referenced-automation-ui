@@ -1,5 +1,5 @@
 import { test as base } from '@playwright/test';
-import { logger } from '@automation/referenced-automation-utils';
+import { getCorrelationId, logger, useTestCorrelation } from '@automation/referenced-automation-utils';
 
 /**
  * Drop-in Playwright Test fixture: `import { test, expect } from
@@ -13,13 +13,19 @@ import { logger } from '@automation/referenced-automation-utils';
  * playwright.config.ts (`use: { screenshot: 'only-on-failure', ... }`) -
  * Playwright Test does that itself, no custom hook required here.
  */
-export const test = base.extend({});
+export const test = base.extend<{
+  /** This test's correlation ID - automatic (every test gets one), shown in the scenario banner and on every log line, and added to the test report. Request it only if you need the value itself, e.g. to pass it to an API call. */
+  correlationId: string;
+}>({
+  correlationId: [async ({}, use, testInfo) => useTestCorrelation(testInfo, use), { auto: true }],
+});
 
 test.beforeEach(async ({}, testInfo) => {
   logger.info('================================================================');
   logger.info(`SCENARIO START : ${testInfo.title}`);
   logger.info(`FILE           : ${testInfo.file}`);
   logger.info(`TAGS           : ${testInfo.tags.join(', ')}`);
+  logger.info(`CORRELATION    : ${getCorrelationId()}`);
   logger.info('================================================================');
 });
 

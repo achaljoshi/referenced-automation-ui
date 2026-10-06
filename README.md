@@ -112,7 +112,7 @@ All of the below are standalone functions imported as `import { actions } from '
 |---|---|
 | Navigation | `goto`, `reload`, `goBack`, `goForward`, `currentUrl`, `title` |
 | Actions | `click`, `dblClick`, `rightClick`, `fill`, `type` (real keystrokes), `clear`, `check`, `uncheck`, `selectOption`, `hover`, `dragAndDrop`, `pressKey`, `focus`, `uploadFile` |
-| Reads | `getText`, `getValue`, `getAttribute`, `isVisible`, `isEnabled`, `isChecked`, `count`, `allText` |
+| Reads | `getText`, `getValue`, `getAttribute` (these wait for the element), and `isVisible`, `isEnabled`, `isChecked`, `count`, `allText` - the state reads **also wait** (up to the expect timeout) for the state to be reached, so `await actions.isVisible(x)` is right even right after a click; pass `{ timeout: 0 }` to read the state instantly, e.g. to assert something is **not** shown |
 | Explicit waits | `waitForVisible`, `waitForHidden`, `waitForUrlContains`, `waitForLoadState`, `waitForResponseMatching` (Playwright's Locator API auto-waits on every action above already - these cover the conditions that don't) |
 | Screenshots | `screenshotPage`, `screenshotElement` (automatic on-failure screenshots are configured in `playwright.config.ts`, not something you call yourself) |
 | Frames | `frame(page, selector)` returns a `FrameLocator` scoped inside an iframe |
