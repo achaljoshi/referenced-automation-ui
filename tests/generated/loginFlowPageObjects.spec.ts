@@ -2,37 +2,34 @@
 // Edit freely - or keep the recording as the source of truth and convert it again to a new file.
 // Typed secrets are never written into the test; set: UI_PASSWORD
 // Paths are relative to BASE_URL - set it to https://app.test to open what was recorded.
-import { loadEnv } from '@automation/referenced-automation-utils';
 import { actions, assertions } from '../../src/index';
 import { test } from '../support/recordedTest';
-import { createLoginFlowPage } from './pages/LoginFlowPage';
-
-const env = loadEnv();
+import { CONSTANTS, createLoginFlowPage } from './pages/LoginFlowPage';
 
 test('LoginFlow @ui', async ({ page }) => {
   const ui = createLoginFlowPage(page);
-  await actions.goto(page, '/');
+  await actions.goto(page, CONSTANTS.urls.home);
   await actions.click(ui.usernameTextbox);
-  await actions.fill(ui.usernameTextbox, 'ada');
+  await actions.fill(ui.usernameTextbox, CONSTANTS.inputs.usernameTextbox);
   await actions.click(ui.passwordField);
-  await actions.fill(ui.passwordField, env.get('UI_PASSWORD'));
+  await actions.fill(ui.passwordField, CONSTANTS.inputs.passwordField);
   await actions.click(ui.loginButton);
   await assertions.toBeVisible(ui.dashboardHeading);
-  await actions.selectOption(ui.countryField, 'uk');
+  await actions.selectOption(ui.countryField, CONSTANTS.inputs.countryField);
   await actions.check(ui.subscribeCheckbox);
   await actions.click(ui.loadItemsButton);
-  await assertions.toHaveCount(ui.listitem, 3);
-  await assertions.toContainText(ui.listitemFirst, 'Item 1');
+  await assertions.toHaveCount(ui.listitem, CONSTANTS.expected.listitemCount);
+  await assertions.toContainText(ui.listitemFirst, CONSTANTS.expected.listitemFirstContainsText);
   await actions.click(ui.clickInsideFrameButton);
-  await assertions.toHaveText(ui.innerResultElement, 'clicked inside frame');
+  await assertions.toHaveText(ui.innerResultElement, CONSTANTS.expected.innerResultElementText);
   await actions.waitForNewTab(page, async () => {
     await actions.click(ui.openNewTabLink);
   });
   await actions.downloadAndRead(page, async () => {
     await actions.click(ui.downloadReportLink);
   }, 'test-results/downloads');
-  await actions.uploadFile(ui.uploadAFileField, 'tests/support/upload-fixture.txt');
-  await assertions.toContainText(ui.fileNameElement, 'upload-fixture.txt');
+  await actions.uploadFile(ui.uploadAFileField, CONSTANTS.inputs.uploadAFileField);
+  await assertions.toContainText(ui.fileNameElement, CONSTANTS.expected.fileNameElementContainsText);
   // removed: page.waitForTimeout(500) - actions and assertions wait for themselves
   await assertions.toBeHidden(ui.invalidCredentialsText);
   await actions.hover(ui.dashboardHeading);

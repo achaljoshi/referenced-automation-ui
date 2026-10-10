@@ -6,7 +6,10 @@ import * as path from 'node:path';
 import { convertCodegen, type ConvertOptions } from '../src/codegen';
 
 const wrap = (body: string, fixtures = 'page') => `import { test, expect } from '@playwright/test';\n\ntest('test', async ({ ${fixtures} }) => {\n${body}\n});\n`;
-const convert = (body: string, options: Partial<ConvertOptions> = {}, fixtures = 'page') => convertCodegen(wrap(body, fixtures), { source: 'rec.spec.ts', ...options });
+// These tests are about how each recorded call maps onto the framework, so they read the code in the steps: `inline` keeps
+// locators and values where they are used. The CONSTANTS / LOCATORS objects (the default) have their own tests below.
+const convert = (body: string, options: Partial<ConvertOptions> = {}, fixtures = 'page') => convertCodegen(wrap(body, fixtures), { source: 'rec.spec.ts', inline: true, ...options });
+const convertWithObjects = (body: string, options: Partial<ConvertOptions> = {}) => convertCodegen(wrap(body), { source: 'rec.spec.ts', ...options });
 /** The lines of the generated test body (without the wrapper), trimmed. */
 const bodyOf = (code: string) => code.split('\n').filter((l) => l.startsWith('  ') && !l.startsWith('  //')).map((l) => l.trim());
 const squash = (code: string) => code.replace(/[\s,]+/g, '');
@@ -396,7 +399,7 @@ test('third', async ({ page }) => { await page.goto('https://app.test/c'); });`;
   await context.close();
   await browser.close();
 })();`;
-    const { spec, warnings, tests } = convertCodegen(code, { source: 'lib.js' });
+    const { spec, warnings, tests } = convertCodegen(code, { source: 'lib.js', inline: true });
     expect(tests).toBe(1);
     expect(spec).toContain("actions.goto(page, '/')");
     expect(spec).toContain("actions.click(role.button(page, 'Go'))");
@@ -435,10 +438,11 @@ test.describe('page objects and data-driven mode', () => {
 
   test('--page-objects names every locator once, the test uses them, and the spec imports only what it still needs', () => {
     const { spec, pageObject } = convert(RECORDING, { pageObjects: true, baseName: 'login' });
-    expect(spec).toContain("import { createLoginPage } from './pages/LoginPage';");
+    expect(spec).toContain("import { CONSTANTS, createLoginPage } from './pages/LoginPage';");
     expect(spec).toContain('const ui = createLoginPage(page);');
-    expect(spec).toContain("await actions.fill(ui.usernameTextbox, 'ada');");
-    expect(spec).toContain('await actions.fill(ui.passwordField, env.get(\'UI_PASSWORD\'));');
+    expect(spec).toContain('await actions.fill(ui.usernameTextbox, CONSTANTS.inputs.usernameTextbox);');
+    expect(spec).toContain('await actions.fill(ui.passwordField, CONSTANTS.inputs.passwordField);');
+    expect(spec).not.toMatch(/'ada'|env\.get/); // values and the environment live in the page object file
     expect(spec.match(/ui\.logInButton/g)).toHaveLength(2); // the same locator, one member
     expect(spec).toContain('ui.listitemFirst');
     expect(spec).toContain('ui.fileNameElement');
@@ -447,12 +451,15 @@ test.describe('page objects and data-driven mode', () => {
     expect(spec).not.toMatch(/locators/); // nothing in the spec builds a locator any more
     expect(pageObject?.fileName).toBe('LoginPage.ts');
     expect(pageObject?.code).toContain('export interface LoginPage {');
-    expect(pageObject?.code).toContain("usernameTextbox: role.textbox(page, 'Username'),");
-    expect(pageObject?.code).toContain("logInButton: role.button(page, 'Log in'),");
-    expect(pageObject?.code.match(/logInButton/g)).toHaveLength(2); // interface + factory, once each
+    expect(pageObject?.code).toContain("usernameTextbox: (scope: Page) => role.textbox(scope, 'Username'),");
+    expect(pageObject?.code).toContain("logInButton: (scope: Page) => role.button(scope, 'Log in'),");
+    expect(pageObject?.code).toContain('logInButton: LOCATORS.logInButton(page),');
+    expect(pageObject?.code.match(/logInButton/g)).toHaveLength(4); // LOCATORS, interface, factory name and call - one locator, one definition
+    expect(pageObject?.code).toContain('export const CONSTANTS = {');
+    expect(pageObject?.code).toContain('export const LOCATORS = {');
   });
 
-  test('page-object members never collide: the same name gets a number, popups keep their locators inline', () => {
+  test('page-object members never collide: the same name gets a number, and a popup looks the same LOCATORS up on itself', () => {
     const { spec, pageObject } = convert(`
   await page.getByRole('button', { name: 'Save' }).click();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -462,7 +469,9 @@ test.describe('page objects and data-driven mode', () => {
   await p1.getByRole('button', { name: 'Save' }).click();`, { pageObjects: true });
     expect(pageObject?.code).toContain('saveButton:');
     expect(pageObject?.code).toContain('saveButton2:');
-    expect(spec).toContain("role.button(p1, 'Save')");
+    // the popup's button is the same element as the page's: one LOCATORS entry, looked up on the popup
+    expect(spec).toContain('LOCATORS.saveButton(p1)');
+    expect(spec).toMatch(/import \{ LOCATORS, create\w+Page \} from '\.\/pages\/\w+Page';/);
   });
 
   test('--data turns typed literals into CSV columns, one test per row; secrets never reach the file', () => {
@@ -475,6 +484,130 @@ test.describe('page objects and data-driven mode', () => {
     expect(data?.csv).toBe('usernameTextbox\nada\n');
     expect(data?.csv).not.toContain('secret');
     expect(data?.rows).toEqual([{ usernameTextbox: 'ada' }]);
+  });
+});
+
+test.describe('CONSTANTS and LOCATORS objects (the default)', () => {
+  const RECORDING = `
+  await page.goto('https://app.test/orders.html?x=1');
+  await page.getByRole('textbox', { name: 'Username' }).fill('ada');
+  await page.getByLabel('Password').fill('hunter2');
+  await page.getByLabel('Country').selectOption('uk');
+  await page.getByRole('button', { name: 'Log in' }).click();
+  await page.getByRole('button', { name: 'Log in' }).click();
+  await page.getByLabel('Upload').setInputFiles('data/a.csv');
+  await page.keyboard.type('hello');
+  await page.getByRole('listitem').filter({ has: page.getByRole('heading', { name: 'P1' }) }).click();
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toHaveText('Dashboard');
+  await expect(page.getByRole('listitem')).toHaveCount(3);
+  await expect(page.getByRole('link')).toHaveAttribute('href', /orders/);
+  await expect(page.getByText('x')).not.toBeVisible();
+  await expect(page).toHaveURL(/done/);
+  await expect(page).toHaveTitle('Orders');
+  await expect(page.getByRole('main')).toMatchAriaSnapshot(\`- heading "A"\`);
+  await page.getByLabel('Note').fill('');`;
+  const { spec } = convertWithObjects(RECORDING);
+  const body = spec.slice(spec.indexOf("test('rec"));
+
+  test('the file starts with CONSTANTS, then LOCATORS, then the test - and the steps only refer to them', () => {
+    const constants = spec.indexOf('const CONSTANTS = {');
+    const locators = spec.indexOf('const LOCATORS = {');
+    const firstTest = spec.indexOf("test('rec");
+    expect(constants).toBeGreaterThan(0);
+    expect(locators).toBeGreaterThan(constants);
+    expect(firstTest).toBeGreaterThan(locators);
+    expect(spec).toContain('} as const;');
+    // nothing a person would edit is left in the steps: no quoted values, no locator built there
+    expect(body).not.toMatch(/'ada'|'uk'|'Dashboard'|'Orders'|'data\/a\.csv'|hello|\/orders\.html/);
+    expect(body).not.toMatch(/role\.|locators\./);
+  });
+
+  test('CONSTANTS: urls, inputs (secrets as environment getters, never as values) and expected values - each named once', () => {
+    expect(spec).toContain("  urls: {\n    ordersHtml: '/orders.html?x=1',");
+    expect(spec).toContain("usernameTextbox: 'ada',");
+    expect(spec).toContain("countryField: 'uk',");
+    expect(spec).toContain("uploadField: 'data/a.csv',");
+    expect(spec).toContain("typedText: 'hello',");
+    expect(spec).toContain("get passwordField() {\n      return env.get('UI_PASSWORD');\n    },");
+    expect(spec).not.toContain('hunter2');
+    expect(spec).toContain("dashboardHeadingText: 'Dashboard',");
+    expect(spec).toContain('listitemCount: 3,');
+    expect(spec).toContain('linkAttribute: /orders/,');
+    expect(spec).toContain('pageUrl: /done/,');
+    expect(spec).toContain("pageTitle: 'Orders',");
+    expect(spec).toContain("const env = loadEnv();");
+    // the steps use them
+    expect(body).toContain('actions.goto(page, CONSTANTS.urls.ordersHtml)');
+    expect(body).toContain('CONSTANTS.inputs.usernameTextbox');
+    expect(body).toContain('CONSTANTS.inputs.passwordField');
+    expect(body).toContain('assertions.toHaveText(LOCATORS.dashboardHeading(page), CONSTANTS.expected.dashboardHeadingText)');
+    expect(body).toContain('assertions.toHaveAttribute(LOCATORS.link(page), \'href\', CONSTANTS.expected.linkAttribute)'); // the attribute NAME stays, the expected value is the constant
+    expect(body).toContain('assertions.toHaveURL(page, CONSTANTS.expected.pageUrl)');
+    expect(body).toContain('assertions.not.toBeVisible(LOCATORS.textX(page))'.replace('textX', 'xText'));
+  });
+
+  test('values that are not worth a constant stay in the step: empty strings, options, ARIA templates', () => {
+    expect(body).toContain("actions.fill(LOCATORS.noteField(page), '')");
+    expect(body).toContain('assertions.toMatchAriaSnapshot(LOCATORS.main(page), `- heading "A"`)');
+  });
+
+  test('LOCATORS: one entry per element however often it is used, written against a `scope` page; nested locators use the same scope', () => {
+    expect(spec).toContain("usernameTextbox: (scope: Page) => role.textbox(scope, 'Username'),");
+    expect(spec.match(/logInButton:/g)).toHaveLength(1);
+    expect(body.match(/LOCATORS\.logInButton\(page\)/g)).toHaveLength(2);
+    expect(spec).toContain("listitem: (scope: Page) => role.listitem(scope).filter({ has: role.heading(scope, 'P1') }),");
+    expect(spec).toContain("import type { Page } from '@playwright/test';");
+    expect(spec).toContain('const { role } = locators;');
+  });
+
+  test('a popup or second page uses the same LOCATORS, looked up on that page', () => {
+    const { spec: popup } = convertWithObjects(`
+  await page.getByRole('button', { name: 'Save' }).click();
+  const p1Promise = page.waitForEvent('popup');
+  await page.getByText('Open').click();
+  const p1 = await p1Promise;
+  await p1.getByRole('button', { name: 'Save' }).click();`);
+    expect(popup.match(/saveButton:/g)).toHaveLength(1);
+    expect(popup).toContain('await actions.click(LOCATORS.saveButton(page));');
+    expect(popup).toContain('await actions.click(LOCATORS.saveButton(p1));');
+  });
+
+  test('--inline puts everything back in the steps and writes neither object', () => {
+    const inline = convertWithObjects(RECORDING, { inline: true }).spec;
+    expect(inline).not.toMatch(/CONSTANTS|LOCATORS/);
+    expect(inline).toContain("actions.fill(role.textbox(page, 'Username'), 'ada')");
+    expect(inline).toContain("env.get('UI_PASSWORD')");
+  });
+
+  test('--data: typed values come from the CSV, the rest stays in CONSTANTS; secrets are still getters', () => {
+    const { spec: data, data: csv } = convertWithObjects(RECORDING, { data: true, baseName: 'orders' });
+    expect(data).not.toContain("usernameTextbox: 'ada'");
+    expect(data).toContain("cell(row, 'usernameTextbox')");
+    expect(data).toContain("get passwordField()");
+    expect(data).toContain("ordersHtml: '/orders.html?x=1'");
+    expect(data).toContain('listitemCount: 3,');
+    expect(csv?.csv).not.toContain('hunter2');
+  });
+
+  test('--page-objects: both objects start the page object file (exported), the factory is built from LOCATORS, the spec imports only what it uses', () => {
+    const { spec: po, pageObject } = convertWithObjects(RECORDING, { pageObjects: true, baseName: 'orders' });
+    const code = pageObject?.code ?? '';
+    expect(code.indexOf('export const CONSTANTS')).toBeLessThan(code.indexOf('export const LOCATORS'));
+    expect(code.indexOf('export const LOCATORS')).toBeLessThan(code.indexOf('export interface OrdersPage'));
+    expect(code).toContain("const env = loadEnv();");
+    expect(code).toContain('usernameTextbox: LOCATORS.usernameTextbox(page),');
+    expect(po).toContain("import { CONSTANTS, createOrdersPage } from './pages/OrdersPage';");
+    expect(po).not.toMatch(/loadEnv|env\.get|locators|role\./);
+  });
+
+  test('colliding names get numbers: two different values for the same field are two constants, the same value is one', () => {
+    const { spec: names } = convertWithObjects(`
+  await page.getByLabel('Name').fill('Ada');
+  await page.getByLabel('Name').fill('Grace');
+  await page.getByLabel('Name').fill('Ada');`);
+    expect(names).toContain("nameField: 'Ada',");
+    expect(names).toContain("nameField2: 'Grace',");
+    expect(names.match(/CONSTANTS\.inputs\.nameField\b/g)).toHaveLength(2);
   });
 });
 
@@ -523,7 +656,9 @@ test.describe('ui-codegen-to-playwright command', () => {
   test('--stdout, standard input and a folder of recordings', () => {
     const fromStdin = run(['-', '--stdout'], RECORDING);
     expect(fromStdin.status).toBe(0);
-    expect(fromStdin.stdout).toContain("actions.goto(page, '/x')");
+    expect(fromStdin.stdout).toContain("x: '/x',");
+    expect(fromStdin.stdout).toContain('actions.goto(page, CONSTANTS.urls.x)');
+    expect(run(['-', '--stdout', '--inline'], RECORDING).stdout).toContain("actions.goto(page, '/x')");
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegen-cli-'));
     fs.writeFileSync(path.join(dir, 'a.spec.ts'), RECORDING);

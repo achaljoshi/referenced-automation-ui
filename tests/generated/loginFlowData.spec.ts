@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { loadEnv, csvUtils } from '@automation/referenced-automation-utils';
 import { actions, assertions, locators } from '../../src/index';
 import { test } from '../support/recordedTest';
+import type { Page } from '@playwright/test';
 
 const env = loadEnv();
 const { role } = locators;
@@ -18,32 +19,74 @@ function cell(row: Record<string, string>, column: string): string {
   return value;
 }
 
+/** Everything the recording visited, typed and expected. Change a value here and every step that uses it follows. */
+const CONSTANTS = {
+  // pages the recording visited (relative to BASE_URL)
+  urls: {
+    home: '/',
+  },
+  // what the recording typed, selected or uploaded - secrets are read from the environment
+  inputs: {
+    get passwordField() {
+      return env.get('UI_PASSWORD');
+    },
+    uploadAFileField: 'tests/support/upload-fixture.txt',
+  },
+  // what the recording checked
+  expected: {
+    listitemCount: 3,
+    listitemFirstContainsText: 'Item 1',
+    innerResultElementText: 'clicked inside frame',
+    fileNameElementContainsText: 'upload-fixture.txt',
+  },
+} as const;
+
+/** Every element the recording used, named once. When the page changes, fix the locator here and every step follows. */
+const LOCATORS = {
+  usernameTextbox: (scope: Page) => role.textbox(scope, 'Username'),
+  passwordField: (scope: Page) => locators.byLabel(scope, 'Password'),
+  loginButton: (scope: Page) => locators.byTestId(scope, 'login-button'),
+  dashboardHeading: (scope: Page) => role.heading(scope, 'Dashboard'),
+  countryField: (scope: Page) => locators.byLabel(scope, 'Country'),
+  subscribeCheckbox: (scope: Page) => role.checkbox(scope, 'Subscribe'),
+  loadItemsButton: (scope: Page) => role.button(scope, 'Load items'),
+  listitem: (scope: Page) => role.listitem(scope),
+  listitemFirst: (scope: Page) => role.listitem(scope).first(),
+  clickInsideFrameButton: (scope: Page) => role.button(locators.byCss(scope, 'iframe[title="Embedded content demo"]').contentFrame(), 'Click inside frame'),
+  innerResultElement: (scope: Page) => locators.byCss(locators.byCss(scope, 'iframe[title="Embedded content demo"]').contentFrame(), '#inner-result'),
+  openNewTabLink: (scope: Page) => role.link(scope, 'Open new tab'),
+  downloadReportLink: (scope: Page) => role.link(scope, 'Download report'),
+  uploadAFileField: (scope: Page) => locators.byLabel(scope, 'Upload a file'),
+  fileNameElement: (scope: Page) => locators.byCss(scope, '#file-name'),
+  invalidCredentialsText: (scope: Page) => locators.byText(scope, 'Invalid credentials'),
+} as const;
+
 for (const [index, row] of rows.entries()) {
   test(`loginFlowData #${index + 1} @ui`, async ({ page }) => {
-    await actions.goto(page, '/');
-    await actions.click(role.textbox(page, 'Username'));
-    await actions.fill(role.textbox(page, 'Username'), cell(row, 'usernameTextbox'));
-    await actions.click(locators.byLabel(page, 'Password'));
-    await actions.fill(locators.byLabel(page, 'Password'), env.get('UI_PASSWORD'));
-    await actions.click(locators.byTestId(page, 'login-button'));
-    await assertions.toBeVisible(role.heading(page, 'Dashboard'));
-    await actions.selectOption(locators.byLabel(page, 'Country'), cell(row, 'countryField'));
-    await actions.check(role.checkbox(page, 'Subscribe'));
-    await actions.click(role.button(page, 'Load items'));
-    await assertions.toHaveCount(role.listitem(page), 3);
-    await assertions.toContainText(role.listitem(page).first(), 'Item 1');
-    await actions.click(role.button(locators.byCss(page, 'iframe[title="Embedded content demo"]').contentFrame(), 'Click inside frame'));
-    await assertions.toHaveText(locators.byCss(locators.byCss(page, 'iframe[title="Embedded content demo"]').contentFrame(), '#inner-result'), 'clicked inside frame');
+    await actions.goto(page, CONSTANTS.urls.home);
+    await actions.click(LOCATORS.usernameTextbox(page));
+    await actions.fill(LOCATORS.usernameTextbox(page), cell(row, 'usernameTextbox'));
+    await actions.click(LOCATORS.passwordField(page));
+    await actions.fill(LOCATORS.passwordField(page), CONSTANTS.inputs.passwordField);
+    await actions.click(LOCATORS.loginButton(page));
+    await assertions.toBeVisible(LOCATORS.dashboardHeading(page));
+    await actions.selectOption(LOCATORS.countryField(page), cell(row, 'countryField'));
+    await actions.check(LOCATORS.subscribeCheckbox(page));
+    await actions.click(LOCATORS.loadItemsButton(page));
+    await assertions.toHaveCount(LOCATORS.listitem(page), CONSTANTS.expected.listitemCount);
+    await assertions.toContainText(LOCATORS.listitemFirst(page), CONSTANTS.expected.listitemFirstContainsText);
+    await actions.click(LOCATORS.clickInsideFrameButton(page));
+    await assertions.toHaveText(LOCATORS.innerResultElement(page), CONSTANTS.expected.innerResultElementText);
     await actions.waitForNewTab(page, async () => {
-      await actions.click(role.link(page, 'Open new tab'));
+      await actions.click(LOCATORS.openNewTabLink(page));
     });
     await actions.downloadAndRead(page, async () => {
-      await actions.click(role.link(page, 'Download report'));
+      await actions.click(LOCATORS.downloadReportLink(page));
     }, 'test-results/downloads');
-    await actions.uploadFile(locators.byLabel(page, 'Upload a file'), 'tests/support/upload-fixture.txt');
-    await assertions.toContainText(locators.byCss(page, '#file-name'), 'upload-fixture.txt');
+    await actions.uploadFile(LOCATORS.uploadAFileField(page), CONSTANTS.inputs.uploadAFileField);
+    await assertions.toContainText(LOCATORS.fileNameElement(page), CONSTANTS.expected.fileNameElementContainsText);
     // removed: page.waitForTimeout(500) - actions and assertions wait for themselves
-    await assertions.toBeHidden(locators.byText(page, 'Invalid credentials'));
-    await actions.hover(role.heading(page, 'Dashboard'));
+    await assertions.toBeHidden(LOCATORS.invalidCredentialsText(page));
+    await actions.hover(LOCATORS.dashboardHeading(page));
   });
 }

@@ -28,7 +28,10 @@ Options:
                            Read the value typed into any field whose locator text matches from an environment variable
                            instead of writing it into the test. Repeatable. Passwords, tokens, secrets, PINs and API keys
                            are handled without this.
-  --page-objects           Name every locator once in pages/<Name>Page.ts and use those in the test.
+  --inline                 Write locators and values where they are used. By default the test starts with a CONSTANTS object
+                           (URLs, typed values, expected values) and a LOCATORS object (every element, named once), and the steps
+                           only refer to them - so a changed input or a changed page is one edit at the top.
+  --page-objects           The same two objects, plus a page object built from them, in pages/<Name>Page.ts; the test uses those.
   --data                   Make every typed literal a column of <name>.data.csv and run one test per row.
   --name <text>            Base name for the test title, page object and data file. Default: the recording's file name.
   --strict                 Exit with an error if anything was kept as plain Playwright (TODO) or removed.
@@ -45,13 +48,14 @@ interface Options {
   keepHost: boolean;
   params: ParamRule[];
   pageObjects: boolean;
+  inline: boolean;
   data: boolean;
   name?: string;
   strict: boolean;
 }
 
 function parseArgs(argv: string[]): Options {
-  const opts: Options = { input: '', out: '', stdout: false, keepHost: false, params: [], pageObjects: false, data: false, strict: false };
+  const opts: Options = { input: '', out: '', stdout: false, keepHost: false, params: [], pageObjects: false, inline: false, data: false, strict: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
     const value = () => {
@@ -69,6 +73,7 @@ function parseArgs(argv: string[]): Options {
     else if (arg === '--tag') opts.tag = value();
     else if (arg === '--keep-host') opts.keepHost = true;
     else if (arg === '--page-objects') opts.pageObjects = true;
+    else if (arg === '--inline') opts.inline = true;
     else if (arg === '--data') opts.data = true;
     else if (arg === '--name') opts.name = value();
     else if (arg === '--strict') opts.strict = true;
@@ -123,6 +128,7 @@ function main(): void {
       keepHost: opts.keepHost,
       params: opts.params,
       pageObjects: opts.pageObjects,
+      inline: opts.inline,
       data: opts.data,
       baseName: opts.name ?? file.base,
     });

@@ -94,7 +94,7 @@ already here), **added** (the gap this round closed), **native** (use Playwright
 | Annotations, tags, `--grep` | native (`@smoke`, `@regression` in titles; converters add `@ui`) | native |
 | Parameterized tests | `for` loops + `csvUtils`; Gherkin `Scenario Outline`; converter `--data` | has / **added** |
 | Gherkin | `registerUiSteps`, `registerDataSteps` (playwright-bdd 9.2.1); sample features in `features/` | **added** |
-| Codegen (record and play) | `ui-codegen-to-playwright` converts the recording into framework-style tests | **added** |
+| Codegen (record and play) | `ui-codegen-to-playwright` converts the recording into framework-style tests that start with `CONSTANTS` (values) and `LOCATORS` (elements) objects | **added** |
 | Debugging (`page.pause`, UI mode) | native; the converter removes `page.pause()` from recordings | native |
 
 ## Not wrapped, and why

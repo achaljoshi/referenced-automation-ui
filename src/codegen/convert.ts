@@ -23,6 +23,13 @@ export interface ConvertOptions {
   params?: ParamRule[];
   /** Put every locator in a page object (`pages/<Name>Page.ts`) instead of repeating it in the test. */
   pageObjects?: boolean;
+  /**
+   * By default the converted test starts with two objects: CONSTANTS (the URLs visited, every value typed, every expected
+   * text / URL / count) and LOCATORS (every element, named once), and the steps only refer to them - so a changed input or
+   * a changed page is one edit at the top. With `inline` the values and locators are written where they are used (handy for
+   * a quick one-off conversion). Ignored with `pageObjects`, where the objects are at the top of the page object file.
+   */
+  inline?: boolean;
   /** Turn every typed literal into a column of a CSV file and run one test per row. */
   data?: boolean;
   /** Base name for the page object, data file and test title. Default: the source file name. */
@@ -84,6 +91,13 @@ const NEGATED_ASSERTIONS = new Set([
   'toBeVisible', 'toBeHidden', 'toBeEnabled', 'toBeDisabled', 'toBeChecked', 'toBeAttached', 'toContainText', 'toHaveText', 'toHaveValue',
   'toHaveAttribute', 'toHaveClass', 'toHaveCount', 'toHaveTitle', 'toHaveURL',
 ]);
+
+/** Name endings for the CONSTANTS.expected entries of each assertion. */
+const EXPECTED_SUFFIX: Record<string, string> = {
+  toHaveText: 'Text', toContainText: 'ContainsText', toHaveValue: 'Value', toHaveValues: 'Values', toHaveAttribute: 'Attribute',
+  toHaveClass: 'Class', toContainClass: 'ContainsClass', toHaveCount: 'Count', toHaveURL: 'Url', toHaveTitle: 'Title', toHaveId: 'Id',
+  toHaveCSS: 'Css', toHaveRole: 'Role', toHaveAccessibleName: 'AccessibleName', toHaveAccessibleDescription: 'AccessibleDescription',
+};
 
 const SECRET_HINT = /pass(word|code|wd)?|secret|token|api[\s_-]?key|\bpin\b|\botp\b|credential|passphrase/i;
 
@@ -149,9 +163,15 @@ class Converter {
   /** Variables that are a browser context. */
   contextVars = new Set<string>(['context']);
 
-  // page-object mode
+  // LOCATORS object (and the page object's members): chain code written against a `scope` parameter -> its name
   readonly members = new Map<string, { name: string; code: string }>();
   readonly memberNames = new Set<string>();
+  // CONSTANTS object: section -> entries
+  readonly constants = new Map<string, Array<{ name: string; code: string; secret?: string }>>();
+  /** The root of the locator chain being rendered (`scope` inside LOCATORS) - so locators nested in arguments agree with it. */
+  private currentRoot: string | undefined;
+  usesConstants = false;
+  usesLocatorsObject = false;
   // data mode
   readonly columns: Array<{ name: string; value: string }> = [];
   readonly columnNames = new Set<string>();
@@ -160,6 +180,11 @@ class Converter {
     readonly sf: ts.SourceFile,
     readonly options: ConvertOptions,
   ) {}
+
+  /** Locators and values go into the CONSTANTS / LOCATORS objects (always in page-object mode; otherwise unless `inline`). */
+  get objects(): boolean {
+    return !this.options.inline || !!this.options.pageObjects;
+  }
 
   text(node: ts.Node): string {
     return node.getText(this.sf);
@@ -217,22 +242,35 @@ class Converter {
 
     const importsBefore = new Set(this.imports);
     const roleBefore = this.usesRoleShorthand;
-    let code: string = root.text;
+    const registering = opts.register && this.objects;
+    // Inside LOCATORS (and inside anything nested in the chain) the page is the `scope` parameter.
+    const rootName = registering ? 'scope' : (this.currentRoot ?? root.text);
+    const outerRoot = this.currentRoot;
+    this.currentRoot = rootName;
+    let code: string = rootName;
     let description = '';
     for (const link of used) {
       const rendered = this.renderLink(code, link);
       code = rendered.code;
       if (rendered.description && !description) description = rendered.description;
     }
+    this.currentRoot = outerRoot;
     const hint = this.nameHint(used);
     const scope = root.text;
     const chain = code;
-    if (opts.register && this.options.pageObjects && scope === 'page') {
-      code = this.member(chain, hint);
-      // the locator code now lives in the page object file, so the spec does not need what built it
-      this.imports.clear();
-      importsBefore.forEach((name) => this.imports.add(name));
-      this.usesRoleShorthand = roleBefore;
+    if (registering) {
+      const name = this.member(chain, hint);
+      if (this.options.pageObjects) {
+        // the locator code lives in the page object file, so the spec does not need what built it
+        this.imports.clear();
+        importsBefore.forEach((n) => this.imports.add(n));
+        this.usesRoleShorthand = roleBefore;
+      }
+      if (this.options.pageObjects && scope === 'page') code = `ui.${name}`;
+      else {
+        this.usesLocatorsObject = true;
+        code = `LOCATORS.${name}(${scope})`;
+      }
     }
     return { code, rest: links.slice(i), scope, hint, description: description || hint, chain };
   }
@@ -340,15 +378,30 @@ class Converter {
     return camel(`${tag} ${(quoted ?? '').split(/\s+/).slice(0, 2).join(' ')}`);
   }
 
-  /** A page-object member for `chain` (reused when the same locator comes up again). */
+  /** The LOCATORS entry for `chain` (reused when the same locator comes up again): its name. */
   private member(chain: string, hint: string): string {
     const existing = this.members.get(chain);
-    if (existing) return `ui.${existing.name}`;
+    if (existing) return existing.name;
     let name = IDENTIFIER.test(hint) ? hint : 'element';
     for (let n = 2; this.memberNames.has(name); n++) name = `${hint}${n}`;
     this.memberNames.add(name);
     this.members.set(chain, { name, code: chain });
-    return `ui.${name}`;
+    return name;
+  }
+
+  /** A CONSTANTS entry: returns the reference (`CONSTANTS.inputs.username`) - or, with `inline`, the code itself. */
+  constant(section: 'urls' | 'inputs' | 'expected', hint: string, code: string, secret?: string): string {
+    if (!this.objects) return code;
+    const entries = this.constants.get(section) ?? [];
+    this.constants.set(section, entries);
+    this.usesConstants = true;
+    const existing = entries.find((e) => e.code === code && e.secret === secret && (e.name === hint || e.name.startsWith(hint)));
+    if (existing) return `CONSTANTS.${section}.${existing.name}`;
+    const base = IDENTIFIER.test(hint) ? hint : `${section.slice(0, -1)}Value`;
+    let name = base;
+    for (let n = 2; entries.some((e) => e.name === name); n++) name = `${base}${n}`;
+    entries.push({ name, code, secret });
+    return `CONSTANTS.${section}.${name}`;
   }
 
   // ---- values: secrets and data columns ----
@@ -359,8 +412,8 @@ class Converter {
     const literal = node.text;
     const hintText = `${locatorInfo.description} ${locatorInfo.hint}`;
     const rule = (this.options.params ?? []).find((r) => r.pattern.test(hintText));
-    if (rule) return this.env(rule.envVar);
-    if (SECRET_HINT.test(hintText)) return this.env(`UI_${snakeUpper(locatorInfo.description && /[A-Za-z]/.test(locatorInfo.description) ? locatorInfo.description : locatorInfo.hint) || 'SECRET'}`);
+    if (rule) return this.secret(locatorInfo.hint, rule.envVar);
+    if (SECRET_HINT.test(hintText)) return this.secret(locatorInfo.hint, `UI_${snakeUpper(locatorInfo.description && /[A-Za-z]/.test(locatorInfo.description) ? locatorInfo.description : locatorInfo.hint) || 'SECRET'}`);
     if (this.options.data && literal !== '') {
       let name = camel(locatorInfo.hint) || 'value';
       for (let n = 2; this.columnNames.has(name); n++) name = `${camel(locatorInfo.hint) || 'value'}${n}`;
@@ -368,7 +421,14 @@ class Converter {
       this.columns.push({ name, value: literal });
       return `cell(row, ${quote(name)})`;
     }
-    return quote(literal);
+    return literal === '' ? quote(literal) : this.constant('inputs', locatorInfo.hint, quote(literal));
+  }
+
+  /** A value that comes from the environment: in CONSTANTS as a getter (read when used, so a missing variable names itself), or inline. */
+  secret(hint: string, envVar: string): string {
+    this.usesEnv = true;
+    this.envVars.add(envVar);
+    return this.objects ? this.constant('inputs', hint, `env.get(${quote(envVar)})`, envVar) : this.env(envVar);
   }
 
   env(name: string): string {
@@ -381,9 +441,21 @@ class Converter {
     if (!isString(node)) return this.arg(node);
     const raw = node.text;
     const origin = /^(https?:\/\/[^/?#]+)(.*)$/i.exec(raw);
-    if (!origin) return quote(raw);
-    this.origins.add((origin[1] as string).toLowerCase());
-    return this.options.keepHost ? quote(raw) : quote(((origin[2] as string) || '/').replace(/^(?=[^/])/, '/'));
+    let target = raw;
+    if (origin) {
+      this.origins.add((origin[1] as string).toLowerCase());
+      target = this.options.keepHost ? raw : ((origin[2] as string) || '/').replace(/^(?=[^/])/, '/');
+    }
+    const pathPart = (origin && this.options.keepHost ? (origin[2] as string) : target).split(/[?#]/)[0] ?? '';
+    const hint = camel(pathPart.replace(/\.[a-z0-9]+$/i, (m) => ` ${m.slice(1)}`)) || 'home';
+    return this.constant('urls', hint.replace(/^[^A-Za-z_$]+/, '') || 'home', quote(target));
+  }
+
+  /** An expected value of an assertion (text, URL, count, pattern) as a CONSTANTS entry, or as written when inline. */
+  expected(node: ts.Expression, hint: string): string {
+    const plain = isString(node) ? node.text !== '' : ts.isRegularExpressionLiteral(node) || ts.isNumericLiteral(node);
+    if (!plain) return this.arg(node);
+    return this.constant('expected', hint, isString(node) ? quote(node.text) : this.text(node));
   }
 }
 
@@ -603,7 +675,8 @@ class StatementConverter {
     if (action.name === 'selectOption' && a[0] && isString(a[0])) return [`await actions.selectOption(${target}, ${this.c.value(a[0], locator)});`];
     if (action.name === 'setInputFiles' && a[0]) {
       if (ts.isArrayLiteralExpression(a[0]) && a[0].elements.length === 0) return [`await actions.clearFiles(${target});`];
-      if (isString(a[0]) || ts.isArrayLiteralExpression(a[0])) return [`await actions.uploadFile(${target}, ${this.c.arg(a[0])});`];
+      if (isString(a[0])) return [`await actions.uploadFile(${target}, ${this.c.constant('inputs', locator.hint, quote(a[0].text))});`];
+      if (ts.isArrayLiteralExpression(a[0])) return [`await actions.uploadFile(${target}, ${this.c.constant('inputs', locator.hint, this.c.arg(a[0]))});`];
       return this.raw(statement, 'setInputFiles from memory (use actions.uploadFromMemory)');
     }
     if (action.name === 'dragTo' && a[0]) {
@@ -643,7 +716,7 @@ class StatementConverter {
         case 'waitForURL':
           if (a.length === 1 && a[0]) {
             this.c.use('assertions');
-            return [`await assertions.toHaveURL(${page}, ${this.c.arg(a[0])});`];
+            return [`await assertions.toHaveURL(${page}, ${this.c.expected(a[0], 'pageUrl')});`];
           }
           return this.raw(statement, 'waitForURL with options');
         case 'setViewportSize':
@@ -669,7 +742,7 @@ class StatementConverter {
     if (links.length === 2 && first.name === 'keyboard' && !first.call && second?.call) {
       const b = second.args;
       if (second.name === 'press' && b[0]) return [`await actions.pressOnPage(${page}, ${this.c.arg(b[0])});`];
-      if (second.name === 'type' && b[0]) return [`await actions.typeOnPage(${page}, ${this.c.arg(b[0])});`];
+      if (second.name === 'type' && b[0]) return [`await actions.typeOnPage(${page}, ${isString(b[0]) ? this.c.constant('inputs', 'typedText', quote(b[0].text)) : this.c.arg(b[0])});`];
     }
     if (links.length === 2 && first.name === 'mouse' && !first.call && second?.call) {
       const b = second.args;
@@ -711,7 +784,13 @@ class StatementConverter {
       return this.raw(statement, `${e.negated ? 'not.' : ''}${e.matcher} has no framework wrapper for this target`);
     }
     this.c.use('assertions');
-    const args = e.args.map((n) => this.c.arg(n));
+    // The values being compared (not options, not the attribute name) are named constants.
+    const valueIndex = ['toHaveAttribute', 'toHaveCSS', 'toHaveJSProperty'].includes(e.matcher) ? 1 : 0;
+    const subject = locator ? locator.hint : 'page';
+    const suffix = EXPECTED_SUFFIX[e.matcher] ?? pascal(e.matcher.replace(/^toHave|^to/, ''));
+    const hint = camel(`${subject} ${e.negated ? 'not ' : ''}${suffix}`);
+    const skip = e.matcher === 'toMatchAriaSnapshot' || e.matcher === 'toHaveScreenshot';
+    const args = e.args.map((n, index) => (index === valueIndex && !skip ? this.c.expected(n, hint) : this.c.arg(n)));
     return [`await assertions.${e.negated ? 'not.' : ''}${e.matcher}(${[target, ...args].join(', ')});`];
   }
 
@@ -803,6 +882,45 @@ function dropLibraryScaffolding(statements: readonly ts.Statement[], c: Converte
   return kept;
 }
 
+const SECTION_COMMENTS: Record<string, string> = {
+  urls: 'pages the recording visited (relative to BASE_URL)',
+  inputs: 'what the recording typed, selected or uploaded - secrets are read from the environment',
+  expected: 'what the recording checked',
+};
+
+/** The CONSTANTS object: every URL, typed value and expected value, named once, to edit in one place. */
+function constantsBlock(c: Converter, exported: boolean): string[] {
+  if (c.constants.size === 0) return [];
+  const lines = [
+    '/** Everything the recording visited, typed and expected. Change a value here and every step that uses it follows. */',
+    `${exported ? 'export ' : ''}const CONSTANTS = {`,
+  ];
+  for (const section of ['urls', 'inputs', 'expected']) {
+    const entries = c.constants.get(section);
+    if (!entries || entries.length === 0) continue;
+    lines.push(`  // ${SECTION_COMMENTS[section]}`, `  ${section}: {`);
+    for (const entry of entries) {
+      if (entry.secret) lines.push(`    get ${entry.name}() {`, `      return ${entry.code};`, '    },');
+      else lines.push(`    ${entry.name}: ${entry.code},`);
+    }
+    lines.push('  },');
+  }
+  lines.push('} as const;', '');
+  return lines;
+}
+
+/** The LOCATORS object: every element the recording used, named once, as a function of the page it is looked up on. */
+function locatorsBlock(c: Converter, exported: boolean): string[] {
+  if (c.members.size === 0) return [];
+  return [
+    '/** Every element the recording used, named once. When the page changes, fix the locator here and every step follows. */',
+    `${exported ? 'export ' : ''}const LOCATORS = {`,
+    ...[...c.members.values()].map((m) => `  ${m.name}: (scope: Page) => ${m.code},`),
+    '} as const;',
+    '',
+  ];
+}
+
 function csvEscape(value: string): string {
   return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
@@ -861,7 +979,8 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
   const names = [...converter.imports].sort();
   const importLines: string[] = [];
   if (options.data) importLines.push("import * as path from 'node:path';");
-  const utilsNames = [...(converter.usesEnv ? ['loadEnv'] : []), ...(options.data ? ['csvUtils'] : [])];
+  const specUsesEnv = converter.usesEnv && !options.pageObjects; // with a page object, CONSTANTS (and so `env`) live in its file
+  const utilsNames = [...(specUsesEnv ? ['loadEnv'] : []), ...(options.data ? ['csvUtils'] : [])];
   if (utilsNames.length > 0) importLines.push(`import { ${utilsNames.join(', ')} } from '@automation/referenced-automation-utils';`);
   const testNames = ['test', ...(converter.usesExpect ? ['expect'] : [])];
   if (testImport === uiImport) importLines.push(`import { ${[...names, ...testNames].sort().join(', ')} } from ${quote(testImport)};`);
@@ -869,10 +988,15 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
     if (names.length > 0) importLines.push(`import { ${names.join(', ')} } from ${quote(uiImport)};`);
     importLines.push(`import { ${testNames.sort().join(', ')} } from ${quote(testImport)};`);
   }
-  if (options.pageObjects) importLines.push(`import { create${pageName}Page } from ${quote(options.pageImport ?? `./pages/${pageName}Page`)};`);
+  if (options.pageObjects) {
+    const fromPage = [...(converter.usesConstants ? ['CONSTANTS'] : []), ...(converter.usesLocatorsObject ? ['LOCATORS'] : []), `create${pageName}Page`];
+    importLines.push(`import { ${fromPage.join(', ')} } from ${quote(options.pageImport ?? `./pages/${pageName}Page`)};`);
+  } else if (converter.members.size > 0) {
+    importLines.push("import type { Page } from '@playwright/test';");
+  }
 
   const preamble: string[] = [];
-  if (converter.usesEnv) preamble.push('const env = loadEnv();');
+  if (specUsesEnv) preamble.push('const env = loadEnv();');
   if (converter.usesRoleShorthand && !options.pageObjects) preamble.push('const { role } = locators;');
   if (options.data) {
     preamble.push(`const rows = csvUtils.parseCsvFile(path.join(__dirname, ${quote(`${baseName}.data.csv`)}));`);
@@ -899,6 +1023,7 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
     ...importLines,
     '',
     ...(preamble.length > 0 ? [...preamble, ''] : []),
+    ...(options.pageObjects ? [] : [...constantsBlock(converter, false), ...locatorsBlock(converter, false)]),
     ...(uses.length > 0 ? [...uses.map((u) => converter.text(u)), ''] : []),
     ...bodies,
   ]
@@ -920,18 +1045,23 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
     const members = [...converter.members.values()];
     const lines = [
       `// Generated by ui-codegen-to-playwright from ${options.source}.`,
-      '// Every locator the recording used, named once. Rename the members, group them into components, add methods.',
+      '// CONSTANTS and LOCATORS first: change a value or fix a locator once, here. Then the page object built from them - rename members, group them into components, add methods.',
+      ...(converter.usesEnv ? ["import { loadEnv } from '@automation/referenced-automation-utils';"] : []),
       "import type { Locator, Page } from '@playwright/test';",
       `import { locators } from ${quote(uiImport.startsWith('.') ? path.posix.join('..', uiImport) : uiImport)};`,
       '',
-      ...(usesRole ? ['const { role } = locators;', ''] : []),
+      ...(converter.usesEnv ? ['const env = loadEnv();'] : []),
+      ...(usesRole ? ['const { role } = locators;'] : []),
+      ...(converter.usesEnv || usesRole ? [''] : []),
+      ...constantsBlock(converter, true),
+      ...locatorsBlock(converter, true),
       `export interface ${pageName}Page {`,
       ...members.map((m) => `  readonly ${m.name}: Locator;`),
       '}',
       '',
       `export function create${pageName}Page(page: Page): ${pageName}Page {`,
       '  return {',
-      ...members.map((m) => `    ${m.name}: ${m.code},`),
+      ...members.map((m) => `    ${m.name}: LOCATORS.${m.name}(page),`),
       '  };',
       '}',
       '',

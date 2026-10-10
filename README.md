@@ -179,18 +179,41 @@ Playwright records; this makes the recording look like the rest of your suite.
 
 ```bash
 npx playwright codegen https://app.example.com --output recordings/checkout.spec.ts
-npx ui-codegen-to-playwright recordings/checkout.spec.ts                 # -> tests/generated/checkout.spec.ts
-npx ui-codegen-to-playwright recordings/checkout.spec.ts --page-objects  # every locator named once in pages/CheckoutPage.ts
+npx ui-codegen-to-playwright recordings/checkout.spec.ts                 # -> tests/generated/checkout.spec.ts (CONSTANTS and LOCATORS at the top)
+npx ui-codegen-to-playwright recordings/checkout.spec.ts --page-objects  # CONSTANTS + LOCATORS + a page object, in pages/CheckoutPage.ts
 npx ui-codegen-to-playwright recordings/checkout.spec.ts --data          # typed values become CSV columns, one test per row
 ```
 
+The converted test starts with two objects, and its steps only refer to them - so a changed input or a changed page is **one edit at the top**:
+
 ```ts
-// recorded                                        // converted
-await page.getByRole('button', { name: 'Log in' }).click();      await actions.click(role.button(page, 'Log in'));
-await page.getByLabel('Password').fill('hunter2');               await actions.fill(locators.byLabel(page, 'Password'), env.get('UI_PASSWORD'));
-await expect(page.getByRole('heading')).toBeVisible();           await assertions.toBeVisible(role.heading(page));
-await page.waitForTimeout(500);                                  // removed: actions and assertions wait for themselves
+// recorded:   await page.getByLabel('Password').fill('hunter2');   await page.getByRole('button', { name: 'Log in' }).click();
+//             await expect(page.getByRole('heading')).toHaveText('Dashboard');   await page.waitForTimeout(500);
+
+const CONSTANTS = {                          // what the recording visited, typed and expected
+  urls: { home: '/' },
+  inputs: {
+    usernameTextbox: 'ada',
+    get passwordField() { return env.get('UI_PASSWORD'); },   // secrets are read from the environment, never written down
+  },
+  expected: { dashboardHeadingText: 'Dashboard' },
+} as const;
+
+const LOCATORS = {                           // every element, named once
+  passwordField: (scope: Page) => locators.byLabel(scope, 'Password'),
+  logInButton: (scope: Page) => role.button(scope, 'Log in'),
+  dashboardHeading: (scope: Page) => role.heading(scope, 'Dashboard'),
+} as const;
+
+test('login @ui', async ({ page }) => {
+  await actions.fill(LOCATORS.passwordField(page), CONSTANTS.inputs.passwordField);
+  await actions.click(LOCATORS.logInButton(page));
+  await assertions.toHaveText(LOCATORS.dashboardHeading(page), CONSTANTS.expected.dashboardHeadingText);
+  // removed: page.waitForTimeout(500) - actions and assertions wait for themselves
+});
 ```
+
+Change `inputs.usernameTextbox` and every step that types it follows; the page moved a button - fix `LOCATORS.logInButton` once. A popup uses the same entries on its own page (`LOCATORS.logInButton(page1)`). With `--page-objects` the same two objects are exported from the top of `pages/<Name>Page.ts` and the test imports them; with `--data` the typed values come from the CSV instead; `--inline` writes everything in the steps (a quick one-off).
 
 - Understands the `playwright-test` output and the `library` one (`(async () => { const browser = await chromium.launch(); ... })()`), parsed with the TypeScript compiler API, so quoting, template strings and nesting are not a problem.
 - **Typed secrets are never written**: a value typed into a field named like a password, token, secret, PIN or API key becomes `env.get('UI_...')`; `--param 'account=ACCOUNT'` marks more. The command prints which variables to set.
