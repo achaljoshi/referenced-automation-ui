@@ -10,5 +10,13 @@
 - The `networkidle` option from page actions.
 
 ### Added
+- **BDD (`playwright-bdd` 9.2.1, pinned)**: `registerUiSteps` (open, click / fill / select / check by role, label and visible text, tabs, dialogs, downloads, uploads, drag and drop, viewport, dark mode, mocked and blocked requests, clock; see, not see, value, state, title, URL, accessibility, screenshot; remember text), `registerDataSteps` (variables, random data, dates, env), `{{placeholders}}` everywhere, `vars` and `uiScenario` fixtures, a `bdd` project and sample features in `features/`, `npm run test:bdd`. There is no "I wait N seconds" step.
+- **`ui-codegen-to-playwright`**: converts what `npx playwright codegen` records (the `playwright-test` TypeScript output or the `library` JavaScript output, parsed with the TypeScript AST) into tests that use `actions`, `locators`, `assertions`: roles, labels, frames, popups, downloads, dialogs, file choosers, responses. Typed passwords/tokens/PINs come from the environment; `waitForTimeout`, `networkidle` and `pause` are removed; unused bindings are dropped; anything with no wrapper is kept as marked Playwright (`--strict` fails on it). `--page-objects` names every locator once; `--data` makes typed values CSV columns, one test per row.
+- **Locators**: `byCss`, `byXpath`, `filterBy`, `either`, `both`, `within`, `nth`, `all`, `frameChain`, `frameBy`, tables (`rowWithText`, `cellInRow`, `readTable`).
+- **Actions**: `setChecked`, `selectText`, `scrollIntoView`, `dispatchEvent`, `blur`, `tap`, `clickWithModifiers`, `clickAt`, `canClick`, `uploadFromMemory`, `clearFiles`, `chooseFiles`, `pressOnPage`, `typeOnPage`, `moveMouse`, `dragBy`, `scrollWheel`, `scrollPageTo`, `fillForm` (by label), `downloadAndRead`.
+- **New modules**: `dialogs`, `network` (JSON/status mocks, edit real responses and requests, block by type, HAR, WebSocket, offline, extra headers, throttling, `trackNetwork`), `storage` (cookies, web storage, saved state, `pageAs`), `emulation`, `clock`, `tabs`, `evaluate` (and browser-API mocks), `visual`, `performance` (timing, web vitals, budgets), `guardPage`.
+- **Assertions**: `toHaveScreenshot`, `toMatchAriaSnapshot`, `softly(...)` (soft assertions across every wrapper), `eventually`, `pollValue`.
+- **Fixtures**: `vars`, `pageGuard` (+ `failOnPageProblems`, `pageProblemsIgnore`, and `guardedTest`), `pageAs`, `uiScenario`.
+- `docs/PLAYWRIGHT_COVERAGE.md`: Playwright's browser capabilities against the framework, with the gaps this round closed.
 - ESLint errors on `waitForTimeout` and `'networkidle'`; `tests/noWaits.spec.ts` proves it against a late-rendering page.
 - Auto `correlationId` fixture; shared Playwright config; `typecheck` and `security` scripts and job.

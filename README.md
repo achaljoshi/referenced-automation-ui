@@ -122,6 +122,84 @@ All of the below are standalone functions imported as `import { actions } from '
 | Network mocking | `mockRoute(page, pattern, response)`, `blockRoute(page, pattern)`, `unrouteAll(page)` |
 | Step visibility | Every function above is wrapped in both `test.step()` (Playwright's HTML report/trace viewer) and the shared logger (console + `logs/automation.log`, visible in CI job logs) - see `src/base/step.ts` |
 
+## More of Playwright, as reusable functions
+
+`docs/PLAYWRIGHT_COVERAGE.md` maps Playwright's own documentation to this framework function by function and lists what was added. The families, each a namespace of the package:
+
+| Namespace | What it is for |
+|---|---|
+| `locators` | beyond role/label/text: `byCss`, `byXpath`, `filterBy`, `either`, `both`, `within`, `frameChain`, tables (`rowWithText`, `cellInRow`, `readTable`) |
+| `actions` | the input guide: `setChecked`, `clickWithModifiers`, `canClick` (dry run), `chooseFiles`, `uploadFromMemory`, `pressOnPage`, `dragBy`, `scrollPageTo`, `fillForm`, `downloadAndRead` |
+| `dialogs` | `handleDialogDuring(page, action, 'accept' \| 'dismiss' \| { accept: 'text' })`, `recordDialogs` |
+| `network` | `mockJson`, `mockStatus`, `modifyJsonResponse`, `modifyRequest`, `blockResources`, `routeFromHar`, `mockWebSocket`, `setOffline`, `throttleNetwork`, `captureApiCall`, `trackNetwork` |
+| `storage` | cookies, local/sessionStorage, `saveStorageState`, `pageAs` (a second signed-in user) |
+| `emulation`, `clock` | viewport, dark mode / reduced motion / print, geolocation, permissions, `newPageWith({ locale, timezoneId, device })`; fix or fast-forward time |
+| `tabs`, `evaluate` | several tabs; `evaluate`, `waitForPageFunction`, `addInitScript`, browser-API mocks (`mockClipboard`, `stubWindowOpen`) |
+| `visual`, `performance` | `ariaSnapshot`, `capture`, `savePdf`; `navigationTiming`, `webVitals`, `expectWithinBudget` |
+| `assertions` | plus `toHaveScreenshot`, `toMatchAriaSnapshot`, `softly(...)`, `eventually(...)`, `pollValue(...)` |
+| fixtures | `vars` (`{{uuid}}`, `{{random:email}}`, `{{date:+7d}}`), `pageGuard` (console errors, page errors, failed requests), `pageAs`; `guardedTest` watches every test |
+
+```ts
+await network.mockJson(page, '**/api/orders', { items: [] }, { delayMs: 300 });      // see the loading state, then the empty state
+const call = await network.captureApiCall(page, '**/api/save', () => actions.click(save)); // what the UI sent, what came back
+await assertions.softly(async () => {                                                  // report everything wrong on the page at once
+  await assertions.toHaveText(heading, 'Orders');
+  await assertions.toHaveCount(rows, 3);
+});
+const { page: admin } = await storage.pageAs(browser, 'admin.json');                    // two users in one scenario
+```
+
+## Gherkin / BDD (`playwright-bdd` 9.2.1)
+
+```gherkin
+Scenario: A valid login shows the dashboard
+  Given I open the page "/"
+  When I fill in "Username" with "ada"
+  And I fill in "Password" with "{{env:UI_PASSWORD}}"
+  And I click the button "Log in"
+  Then I should see the heading "Dashboard"
+```
+
+```ts
+// features/steps/steps.ts
+import { createBdd } from 'playwright-bdd';
+import { registerUiSteps, registerDataSteps } from '@automation/referenced-automation-ui';
+import { test } from './fixtures';              // mergeTests(bddTest, uiTest) - see features/steps/fixtures.ts
+
+const { Given, When, Then } = createBdd(test);
+registerDataSteps({ Given, Then });             // variables, random data, dates, env
+registerUiSteps({ Given, When, Then });         // open, click, fill, select, check, tabs, dialogs, downloads, assertions ...
+```
+
+Elements are found the way a user finds them - `the button "Save"`, `the field "Country"`, `"Welcome back"` - never by CSS, and every step waits through Playwright's auto-waiting: there is no "I wait N seconds" step on purpose. Every string goes through `{{placeholders}}`. `npm test` runs `bddgen && playwright test`; `npm run test:bdd` only the features; `--grep @smoke` filters. `registerDataSteps` is also in the API package - register it once when features use both.
+
+## Record, then convert (`ui-codegen-to-playwright`)
+
+Playwright records; this makes the recording look like the rest of your suite.
+
+```bash
+npx playwright codegen https://app.example.com --output recordings/checkout.spec.ts
+npx ui-codegen-to-playwright recordings/checkout.spec.ts                 # -> tests/generated/checkout.spec.ts
+npx ui-codegen-to-playwright recordings/checkout.spec.ts --page-objects  # every locator named once in pages/CheckoutPage.ts
+npx ui-codegen-to-playwright recordings/checkout.spec.ts --data          # typed values become CSV columns, one test per row
+```
+
+```ts
+// recorded                                        // converted
+await page.getByRole('button', { name: 'Log in' }).click();      await actions.click(role.button(page, 'Log in'));
+await page.getByLabel('Password').fill('hunter2');               await actions.fill(locators.byLabel(page, 'Password'), env.get('UI_PASSWORD'));
+await expect(page.getByRole('heading')).toBeVisible();           await assertions.toBeVisible(role.heading(page));
+await page.waitForTimeout(500);                                  // removed: actions and assertions wait for themselves
+```
+
+- Understands the `playwright-test` output and the `library` one (`(async () => { const browser = await chromium.launch(); ... })()`), parsed with the TypeScript compiler API, so quoting, template strings and nesting are not a problem.
+- **Typed secrets are never written**: a value typed into a field named like a password, token, secret, PIN or API key becomes `env.get('UI_...')`; `--param 'account=ACCOUNT'` marks more. The command prints which variables to set.
+- The popup / download / dialog / file-chooser / response patterns Playwright records as three statements become one framework call (`actions.waitForNewTab`, `actions.downloadAndRead`, `dialogs.handleDialogDuring`, `actions.chooseFiles`, ...). A popup or download the recording never uses is not bound to an unused variable.
+- Fixed waits, `networkidle` and `page.pause()` are removed - and listed. Anything with no framework wrapper stays as plain, marked Playwright (`// TODO(converter)`), and `--strict` turns that into a failure so it cannot be forgotten.
+- Paths are relative to `BASE_URL` (`--keep-host` keeps full URLs). `--test-import` / `--ui-import` point the generated file at your own base test and package.
+
+`recordings/login-flow.spec.ts` is a worked example; `tests/generated/` holds its three conversions, which run in this repo's suite (a test fails if they drift from what the converter produces).
+
 ## Locators: `getByRole()` and friends, not CSS/XPath
 
 `import { locators } from '@automation/referenced-automation-ui'`. The point of this layer is to make Playwright's own accessibility-first locators (`getByRole`, `getByText`, `getByLabel`, ...) the path of least resistance, instead of every page object reaching for `page.locator('#some-id')` the way a Selenium-based framework has to. Every function here takes a `Scope` - a `Page`, a `Locator` (to search inside a component's own root), or a `FrameLocator` (to search inside an iframe) - as its first argument, so the exact same call works whether you're searching the whole page or scoping into something narrower.

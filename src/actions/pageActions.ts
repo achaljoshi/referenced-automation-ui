@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { Download, FrameLocator, Page, Response } from '@playwright/test';
 import { logger } from '@automation/referenced-automation-utils';
 import { step } from '../base/step';
@@ -103,4 +105,40 @@ export async function blockRoute(page: Page, urlPattern: string | RegExp): Promi
 
 export async function unrouteAll(page: Page): Promise<void> {
   await page.unrouteAll();
+}
+
+export interface DownloadedFile {
+  download: Download;
+  /** Name the server suggested. */
+  fileName: string;
+  /** Where it was saved. */
+  path: string;
+  bytes(): Promise<Buffer>;
+  text(): Promise<string>;
+  json<T = unknown>(): Promise<T>;
+}
+
+/**
+ * Runs `action` (the click that starts a download), saves the file into `directory` under the name the server
+ * suggested, and returns something you can read: `(await downloadAndRead(page, click, dir)).text()`. A download that
+ * failed on the way fails here with the reason.
+ */
+export async function downloadAndRead(page: Page, action: () => Promise<void>, directory: string): Promise<DownloadedFile> {
+  return step('Download a file', async () => {
+    const [download] = await Promise.all([page.waitForEvent('download'), action()]);
+    const failure = await download.failure();
+    if (failure) throw new Error(`Download of ${download.suggestedFilename()} failed: ${failure}`);
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, download.suggestedFilename());
+    await download.saveAs(file);
+    logger.info(`Downloaded ${download.suggestedFilename()} (${fs.statSync(file).size} bytes) to ${file}`);
+    return {
+      download,
+      fileName: download.suggestedFilename(),
+      path: file,
+      bytes: async () => fs.readFileSync(file),
+      text: async () => fs.readFileSync(file, 'utf8'),
+      json: async <T = unknown>() => JSON.parse(fs.readFileSync(file, 'utf8')) as T,
+    };
+  });
 }

@@ -1,5 +1,7 @@
-import { test as base } from '@playwright/test';
-import { getCorrelationId, logger, useTestCorrelation } from '@automation/referenced-automation-utils';
+import { test as base, type BrowserContext, type Page } from '@playwright/test';
+import { getCorrelationId, logger, placeholders, useTestCorrelation } from '@automation/referenced-automation-utils';
+import { guardPage, type PageGuard } from '../diagnostics/pageGuard';
+import { UiScenario } from '../bdd/scenario';
 
 /**
  * Drop-in Playwright Test fixture: `import { test, expect } from
@@ -31,7 +33,22 @@ export function logScenarioEnd(testInfo: { title: string; status?: string; expec
   logger.info('================================================================\n');
 }
 
-export const test = base.extend<{
+export interface UiFixtures {
+  /** This test's named values and `{{placeholders}}` ({{uuid}}, {{random:email}}, {{date:+7d}}, {{env:X}}, {{name}}): `vars.interpolate('user-{{uuid}}')`. Used by the Gherkin steps, handy anywhere. */
+  vars: placeholders.ScenarioVariables;
+  /** What a Gherkin scenario carries between steps (which tab the steps act on, recorded dialogs, the last download, the page guard). */
+  uiScenario: UiScenario;
+  /** Watches `page` for console errors, uncaught exceptions, failed requests and 4xx/5xx; attaches what it found to the report. Request it to start watching (or use `guardedTest` to watch every test). */
+  pageGuard: PageGuard;
+  /** Makes `pageGuard` fail the test when it saw a problem (default false: problems are attached, not fatal). Set with `test.use({ failOnPageProblems: true })`. */
+  failOnPageProblems: boolean;
+  /** Messages / URLs `pageGuard` ignores - known third-party noise. `test.use({ pageProblemsIgnore: [/analytics/] })`. */
+  pageProblemsIgnore: Array<string | RegExp>;
+  /** A page already signed in from a saved storage state, in its own context - for a second user in the same test. Closed after the test. */
+  pageAs: (storageStateFile: string, contextOptions?: Parameters<import('@playwright/test').Browser['newContext']>[0]) => Promise<Page>;
+}
+
+export const test = base.extend<UiFixtures & {
   /** This test's correlation ID - automatic (every test gets one), shown in the scenario banner and on every log line, and added to the test report. Request it only if you need the value itself, e.g. to pass it to an API call. */
   correlationId: string;
   /** The start/pass/fail banner - automatic. An auto fixture rather than a module-level `test.beforeEach`, so importing this module has no side effects (tools like `bddgen` import it outside a test run), and it applies only to tests that use THIS `test`. */
@@ -44,6 +61,47 @@ export const test = base.extend<{
       logScenarioStart(testInfo);
       await use();
       logScenarioEnd(testInfo);
+    },
+    { auto: true },
+  ],
+
+  vars: async ({}, use) => {
+    await use(new placeholders.ScenarioVariables());
+  },
+
+  uiScenario: async ({ page }, use) => {
+    await use(new UiScenario(page));
+  },
+
+  failOnPageProblems: [false, { option: true }],
+  pageProblemsIgnore: [[], { option: true }],
+
+  pageGuard: async ({ page, failOnPageProblems, pageProblemsIgnore }, use, testInfo) => {
+    const guard = guardPage(page, { ignore: pageProblemsIgnore });
+    await use(guard);
+    guard.stop();
+    await guard.attach(testInfo);
+    // Only a test that otherwise passed is failed for this: a failing test already has its own reason.
+    if (failOnPageProblems && testInfo.status === testInfo.expectedStatus) guard.expectClean();
+  },
+
+  pageAs: async ({ browser }, use) => {
+    const contexts: BrowserContext[] = [];
+    await use(async (storageStateFile, contextOptions = {}) => {
+      const context = await browser.newContext({ ...contextOptions, storageState: storageStateFile });
+      contexts.push(context);
+      return context.newPage();
+    });
+    for (const context of contexts) await context.close();
+  },
+});
+
+/** `test` with `pageGuard` switched on for every test: console errors, exceptions and failed requests are attached to each report (and fail the test with `test.use({ failOnPageProblems: true })`). */
+export const guardedTest = test.extend<{ guard: void }>({
+  guard: [
+    async ({ pageGuard }, use) => {
+      void pageGuard;
+      await use();
     },
     { auto: true },
   ],
