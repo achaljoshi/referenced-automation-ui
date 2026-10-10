@@ -37,7 +37,7 @@
 # need already installed - NOT as the source of the browsers themselves.
 # The version baked into that image (v1.47.0) does not have to match this
 # repo's own @playwright/test version (kept at whatever package.json
-# already pins, e.g. 1.62.1, unchanged for CI's sake) - every job below
+# already pins, e.g. 1.64.0, unchanged for CI's sake) - every job below
 # runs `npx playwright install` itself, after `npm ci`, to fetch browser
 # binaries that actually match whatever version npm just installed.
 # Running a Playwright driver against browsers built for a different
