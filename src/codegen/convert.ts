@@ -101,6 +101,32 @@ const EXPECTED_SUFFIX: Record<string, string> = {
 
 const SECRET_HINT = /pass(word|code|wd)?|secret|token|api[\s_-]?key|\bpin\b|\botp\b|credential|passphrase/i;
 
+/** Words that make a property / header / storage key a credential: `accessToken`, `x-api-key`, `Authorization`, `client_secret`. */
+const SECRET_WORDS = new Set(['pass', 'password', 'passwd', 'pwd', 'passcode', 'passphrase', 'secret', 'token', 'apikey', 'pin', 'otp', 'credential', 'credentials', 'authorization', 'cookie', 'bearer', 'jwt']);
+function isSecretKey(key: string): boolean {
+  const words = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.some((w, i) => SECRET_WORDS.has(w) || (w === 'key' && ['api', 'secret', 'private', 'access', 'auth'].includes(words[i - 1] ?? '')));
+}
+
+/** Literal parts of a string that are credentials; each match has the secret in group 2 (group 1 stays) and a name for its environment variable. */
+const SECRET_IN_TEXT: Array<{ pattern: RegExp; name: (match: RegExpExecArray) => string }> = [
+  // URL query / fragment parameters: ?token=..., &api_key=..., #access_token=...
+  { pattern: /([?&#;](?:access_token|id_token|refresh_token|auth_token|token|api[_-]?key|apikey|password|passwd|pwd|secret|client_secret|signature|sig|session(?:id)?|sid)=)([^&#\s'"]+)/gi, name: (m) => `URL_${(m[1] as string).slice(1, -1)}` },
+  // Authorization header values
+  { pattern: /\b((?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]{8,})/g, name: (m) => (/^bearer/i.test(m[1] as string) ? 'BEARER_TOKEN' : 'BASIC_CREDENTIAL') },
+  // JWTs
+  { pattern: /()(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*)/g, name: () => 'JWT' },
+  // code in a string (page.evaluate("localStorage.setItem('token', 'abc')")): a credential-looking key followed by a quoted value
+  { pattern: /(\b[\w.-]*(?:password|passwd|pwd|passcode|secret|token|api[_-]?key|authorization)[\w.-]*['"]?\s*[,:=]\s*['"])([^'"]+)(?=['"])/gi, name: (m) => (/([\w.-]*(?:password|passwd|pwd|passcode|secret|token|api[_-]?key|authorization)[\w.-]*)/i.exec(m[1] as string)?.[1] ?? 'SECRET') },
+  // document.cookie = 'session=abc; path=/'
+  { pattern: /(\bcookie\s*=\s*['"]\s*[\w.-]+=)([^;'"]+)/gi, name: (m) => `COOKIE_${/([\w.-]+)=$/.exec(m[1] as string)?.[1] ?? 'VALUE'}` },
+  // a cookie string on its own ('session=abc; path=/')
+  { pattern: /^([\w.-]*(?:sess|sid|auth|token|jwt|login|csrf|xsrf)[\w.-]*=)([^;\s]+)/i, name: (m) => (m[1] as string).slice(0, -1) },
+];
+
+/** A key press that types a character (as opposed to Enter, Tab, Control+A ...): `a`, `Shift+A`, `KeyA`, `Digit5`. */
+const SINGLE_KEY = /^(Shift\+)?([\x20-\x7e]|Key[A-Z]|Digit\d|Numpad\d)$/;
+
 const quote = (value: string) => `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 
@@ -153,6 +179,8 @@ class Converter {
   readonly origins = new Set<string>();
   readonly imports = new Set<string>();
   usesEnv = false;
+  /** An `env.get(...)` written into the test body itself (raw statements, `test.use`) - the spec then needs `const env = loadEnv()` even when CONSTANTS live in a page object. */
+  usesEnvInBody = false;
   usesRoleShorthand = false;
   usesExpect = false;
   usesContextFixture = false;
@@ -172,6 +200,12 @@ class Converter {
   private currentRoot: string | undefined;
   usesConstants = false;
   usesLocatorsObject = false;
+  /** The last element the recording acted on, when it looked secret: what keyboard typing that follows goes into. */
+  secretFocus: { hint: string; description: string } | undefined;
+  /** The focus (its hint) whose secret keystrokes were already written as one typed value: the single-character presses after it are dropped. */
+  secretTyped: string | undefined;
+  /** Secret literal -> its environment variable, so a value used twice shares one and two different values never collide. */
+  private readonly secretNames = new Map<string, string>();
   // data mode
   readonly columns: Array<{ name: string; value: string }> = [];
   readonly columnNames = new Set<string>();
@@ -413,7 +447,7 @@ class Converter {
     const hintText = `${locatorInfo.description} ${locatorInfo.hint}`;
     const rule = (this.options.params ?? []).find((r) => r.pattern.test(hintText));
     if (rule) return this.secret(locatorInfo.hint, rule.envVar);
-    if (SECRET_HINT.test(hintText)) return this.secret(locatorInfo.hint, `UI_${snakeUpper(locatorInfo.description && /[A-Za-z]/.test(locatorInfo.description) ? locatorInfo.description : locatorInfo.hint) || 'SECRET'}`);
+    if (SECRET_HINT.test(hintText)) return this.secret(locatorInfo.hint, this.secretEnvName(locatorInfo));
     if (this.options.data && literal !== '') {
       let name = camel(locatorInfo.hint) || 'value';
       for (let n = 2; this.columnNames.has(name); n++) name = `${camel(locatorInfo.hint) || 'value'}${n}`;
@@ -422,6 +456,11 @@ class Converter {
       return `cell(row, ${quote(name)})`;
     }
     return literal === '' ? quote(literal) : this.constant('inputs', locatorInfo.hint, quote(literal));
+  }
+
+  /** The default environment variable for what is typed into this locator (the same rule `value()` uses). */
+  secretEnvName(locatorInfo: { hint: string; description: string }): string {
+    return `UI_${snakeUpper(locatorInfo.description && /[A-Za-z]/.test(locatorInfo.description) ? locatorInfo.description : locatorInfo.hint) || 'SECRET'}`;
   }
 
   /** A value that comes from the environment: in CONSTANTS as a getter (read when used, so a missing variable names itself), or inline. */
@@ -437,9 +476,186 @@ class Converter {
     return `env.get(${quote(name)})`;
   }
 
+  // ---- literals that are credentials: every sink (typed value, keystrokes, cookies, headers, URLs, evaluated code) ----
+
+  /** The environment variable for a secret literal (the same literal gets the same name; a different literal under the same name gets a suffix). */
+  private envName(base: string, literal: string): string {
+    const name = base.startsWith('UI_') ? base : `UI_${snakeUpper(base) || 'SECRET'}`;
+    const known = this.secretNames.get(`${name}\u0000${literal}`);
+    if (known) return known;
+    let unique = name;
+    for (let n = 2; [...this.secretNames.values()].includes(unique); n++) unique = `${name}_${n}`;
+    this.secretNames.set(`${name}\u0000${literal}`, unique);
+    return unique;
+  }
+
+  /** `env.get('NAME')` for a secret literal written in the test body; notes the variable and warns where it came from. */
+  private bodyEnv(node: ts.Node, base: string, literal: string, what: string): string {
+    const name = this.envName(base, literal);
+    this.envVars.add(name);
+    this.usesEnvInBody = true;
+    this.warn(node, `${what} replaced by ${name} (set it in the environment)`);
+    return `env.get(${quote(name)})`;
+  }
+
+  /** A string literal's text with the credentials in it as environment reads: the template-literal code and the first variable, or undefined when it holds none. */
+  scrubText(value: string, node?: ts.Node, mode: 'body' | 'constant' = 'body'): { code: string; first: string } | undefined {
+    const parts: Array<string | { env: string }> = [value];
+    let first: string | undefined;
+    for (const rule of SECRET_IN_TEXT) {
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        if (typeof part !== 'string') continue;
+        const next: Array<string | { env: string }> = [];
+        let cursor = 0;
+        rule.pattern.lastIndex = 0;
+        for (let match = rule.pattern.exec(part); match; match = rule.pattern.global ? rule.pattern.exec(part) : null) {
+          const secret = match[2] as string;
+          const start = match.index + (match[1] as string).length;
+          const env = this.envName(rule.name(match), secret);
+          this.envVars.add(env);
+          if (mode === 'constant') this.usesEnv = true;
+          else this.usesEnvInBody = true;
+          if (node) this.warn(node, `a credential in a string literal replaced by ${env} (set it in the environment)`);
+          first ??= env;
+          next.push(part.slice(cursor, start), { env });
+          cursor = start + secret.length;
+        }
+        if (cursor > 0) {
+          next.push(part.slice(cursor));
+          parts.splice(i, 1, ...next);
+          i += next.length - 1;
+        }
+      }
+    }
+    if (!first) return undefined;
+    const escape = (text: string) => text.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+    return { code: `\`${parts.filter((p) => p !== '').map((p) => (typeof p === 'string' ? escape(p) : `\${env.get(${quote(p.env)})}`)).join('')}\``, first };
+  }
+
+  /** Source text of a node with every credential literal inside it replaced by an environment read (cookies, auth headers, `{ password: ... }`, URL tokens, evaluated code). */
+  scrubbed(node: ts.Node): string {
+    const base = node.getStart(this.sf);
+    const edits: Array<{ start: number; end: number; text: string }> = [];
+    const replace = (target: ts.Node, text: string) => edits.push({ start: target.getStart(this.sf) - base, end: target.getEnd() - base, text });
+    const propertyName = (p: ts.PropertyAssignment) => (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) || ts.isNoSubstitutionTemplateLiteral(p.name) ? p.name.text : undefined);
+
+    // Code that runs in the BROWSER (the function of page.evaluate, addInitScript ...) cannot read this process's environment:
+    // a credential in it is passed in as an argument of evaluate, or - where that is not possible - masked as '***'.
+    type Context = { browser: false } | { browser: true; args?: Map<string, string> };
+    let context: Context = { browser: false };
+    const BROWSER_CALLS = new Set(['evaluate', 'evaluateHandle', 'addInitScript', 'waitForFunction', '$eval', '$$eval', 'evaluateAll']);
+    const credential = (target: ts.Node, nameBase: string, literal: string, what: string) => {
+      if (!context.browser) return replace(target, this.bodyEnv(target, nameBase, literal, what));
+      const env = this.envName(nameBase, literal);
+      if (context.args) {
+        this.envVars.add(env);
+        this.usesEnvInBody = true;
+        context.args.set(env, env);
+        this.warn(target, `${what} replaced by ${env}, passed to the browser as an argument of evaluate (set it in the environment)`);
+        return replace(target, `secrets.${env}`);
+      }
+      this.warn(target, `${what} is inside code that runs in the browser and was masked as '***': pass the real value in as an argument`);
+      replace(target, "'***'");
+    };
+    const visit = (n: ts.Node): void => {
+      if (ts.isObjectLiteralExpression(n)) {
+        const props = n.properties.filter(ts.isPropertyAssignment);
+        const nameProp = props.find((p) => propertyName(p) === 'name');
+        const cookieName = nameProp && isString(nameProp.initializer) && props.some((p) => propertyName(p) === 'value') && props.some((p) => ['domain', 'url', 'path', 'expires'].includes(propertyName(p) ?? '')) ? nameProp.initializer.text : undefined;
+        for (const p of n.properties) {
+          if (ts.isPropertyAssignment(p)) {
+            const key = propertyName(p);
+            if (key !== undefined && isString(p.initializer) && p.initializer.text !== '') {
+              if (cookieName !== undefined && key === 'value') {
+                credential(p.initializer, `COOKIE_${cookieName}`, p.initializer.text, `the value of cookie "${cookieName}"`);
+                continue;
+              }
+              if (isSecretKey(key)) {
+                credential(p.initializer, key, p.initializer.text, `the value of "${key}"`);
+                continue;
+              }
+            }
+            visit(p.initializer);
+          } else visit(p);
+        }
+        return;
+      }
+      if (ts.isCallExpression(n)) {
+        const [a0, a1] = n.arguments;
+        // setItem('token', 'abc'), headers.set('Authorization', '...'), page.fill('#password', 'x'): a credential-named key and its literal
+        if (a0 && a1 && isString(a0) && isString(a1) && a1.text !== '' && n.arguments.length <= 3 && isSecretKey(a0.text)) {
+          credential(a1, a0.text.replace(/[^A-Za-z0-9]+/g, '_'), a1.text, `the value stored under "${a0.text}"`);
+          visit(n.expression);
+          return;
+        }
+        // frame.getByLabel('Password').fill('x'): typing into something that is named like a secret
+        if (ts.isPropertyAccessExpression(n.expression) && ['fill', 'pressSequentially', 'type'].includes(n.expression.name.text) && a0 && isString(a0) && a0.text !== '' && n.arguments.length === 1) {
+          const receiver = n.expression.expression.getText(this.sf);
+          if (SECRET_HINT.test(receiver)) {
+            const named = /['"`]([^'"`]+)['"`]/.exec(receiver)?.[1] ?? 'secret';
+            credential(a0, named, a0.text, `the text typed into ${named}`);
+            visit(n.expression);
+            return;
+          }
+        }
+        if (ts.isPropertyAccessExpression(n.expression) && BROWSER_CALLS.has(n.expression.name.text)) {
+          visit(n.expression.expression);
+          const outer = context;
+          n.arguments.forEach((argument, index) => {
+            const isFunction = ts.isArrowFunction(argument) || ts.isFunctionExpression(argument);
+            if (!isFunction) return visit(argument);
+            // page.evaluate(() => ...) with nothing else passed: the credentials become `secrets.NAME`, handed in as the argument
+            const passable = index === 0 && n.arguments.length === 1 && argument.parameters.length === 0 && ['evaluate', 'evaluateHandle'].includes((n.expression as ts.PropertyAccessExpression).name.text);
+            const args = passable ? new Map<string, string>() : undefined;
+            const before = edits.length;
+            context = { browser: true, args };
+            visit(argument.body);
+            context = outer;
+            if (args && args.size > 0) {
+              const headEnd = ts.isArrowFunction(argument) ? argument.equalsGreaterThanToken.getStart(this.sf) : argument.body.getStart(this.sf);
+              const head = this.sf.text.slice(argument.getStart(this.sf), headEnd).replace(/\(\s*\)/, '(secrets)');
+              edits.push({ start: argument.getStart(this.sf) - base, end: headEnd - base, text: head });
+              edits.push({ start: argument.getEnd() - base, end: argument.getEnd() - base, text: `, { ${[...args.keys()].map((env) => `${env}: env.get(${quote(env)})`).join(', ')} }` });
+            } else if (args) edits.splice(before, edits.length - before);
+          });
+          return;
+        }
+      }
+      if (isString(n)) {
+        // inside browser code a template with env reads would run in the browser too: only mask what is certainly a credential
+        const scrubbed = context.browser ? undefined : this.scrubText(n.text, n);
+        if (scrubbed) replace(n, scrubbed.code);
+        else if (context.browser && SECRET_IN_TEXT.some((rule) => { rule.pattern.lastIndex = 0; const hit = rule.pattern.test(n.text); rule.pattern.lastIndex = 0; return hit; })) {
+          this.warn(n, "a credential in a string inside code that runs in the browser was masked as '***': pass the real value in as an argument");
+          replace(n, "'***'");
+        }
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(node);
+    let text = node.getText(this.sf);
+    for (const edit of edits.sort((x, y) => y.start - x.start || y.end - x.end)) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+    return text;
+  }
+
+  /** An argument passed through to a framework call as written, with credentials replaced. Locators inside it are converted as usual. */
+  safeArg(node: ts.Expression): string {
+    const locator = this.locator(node, { register: false });
+    if (locator) return locator.code;
+    if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) return this.arg(node) === this.text(node) ? this.scrubbed(node) : this.arg(node);
+    return this.scrubbed(node);
+  }
+
   url(node: ts.Expression): string {
     if (!isString(node)) return this.arg(node);
-    const raw = node.text;
+    let raw = node.text;
+    // credentials in the user-info part of the URL: not kept (HTTP credentials belong in `test.use({ httpCredentials })` from the environment)
+    if (/^https?:\/\/[^/?#@]*@/i.test(raw)) {
+      this.warn(node, 'credentials in the URL were removed; give the browser httpCredentials from the environment instead');
+      raw = raw.replace(/^(https?:\/\/)[^/?#@]*@/i, '$1');
+    }
     const origin = /^(https?:\/\/[^/?#]+)(.*)$/i.exec(raw);
     let target = raw;
     if (origin) {
@@ -447,14 +663,27 @@ class Converter {
       target = this.options.keepHost ? raw : ((origin[2] as string) || '/').replace(/^(?=[^/])/, '/');
     }
     const pathPart = (origin && this.options.keepHost ? (origin[2] as string) : target).split(/[?#]/)[0] ?? '';
-    const hint = camel(pathPart.replace(/\.[a-z0-9]+$/i, (m) => ` ${m.slice(1)}`)) || 'home';
-    return this.constant('urls', hint.replace(/^[^A-Za-z_$]+/, '') || 'home', quote(target));
+    const hint = (camel(pathPart.replace(/\.[a-z0-9]+$/i, (m) => ` ${m.slice(1)}`)) || 'home').replace(/^[^A-Za-z_$]+/, '') || 'home';
+    // ?token=..., &api_key=..., #access_token=...: read from the environment, like a typed password
+    const secret = this.scrubText(target, node, this.objects ? 'constant' : 'body');
+    if (secret) return this.constant('urls', hint, secret.code, secret.first);
+    return this.constant('urls', hint, quote(target));
   }
 
   /** An expected value of an assertion (text, URL, count, pattern) as a CONSTANTS entry, or as written when inline. */
   expected(node: ts.Expression, hint: string): string {
     const plain = isString(node) ? node.text !== '' : ts.isRegularExpressionLiteral(node) || ts.isNumericLiteral(node);
     if (!plain) return this.arg(node);
+    if (isString(node)) {
+      const secret = this.scrubText(node.text, node, this.objects ? 'constant' : 'body');
+      if (secret) return this.constant('expected', hint, secret.code, secret.first);
+    }
+    if (ts.isRegularExpressionLiteral(node) && SECRET_IN_TEXT[0]?.pattern.test(node.text)) {
+      // a pattern cannot read the environment: the credential's value is matched by a wildcard instead
+      SECRET_IN_TEXT[0].pattern.lastIndex = 0;
+      this.warn(node, 'a credential in the expected URL pattern was replaced by a wildcard');
+      return this.constant('expected', hint, node.text.replace(SECRET_IN_TEXT[0].pattern, '$1[^&#]+'));
+    }
     return this.constant('expected', hint, isString(node) ? quote(node.text) : this.text(node));
   }
 }
@@ -671,7 +900,18 @@ class StatementConverter {
     if (action.name === 'click' && a[0] && ts.isObjectLiteralExpression(a[0]) && a[0].properties.length === 1 && /button:\s*['"]right['"]/.test(this.c.text(a[0]))) {
       return [`await actions.rightClick(${target});`];
     }
-    if (action.name === 'fill' && a[0]) return [`await actions.fill(${target}, ${this.c.value(a[0], locator)});`];
+    // Remember what the recording is working in: keystrokes typed at page level right after go into it.
+    const secretLocator = SECRET_HINT.test(`${locator.description} ${locator.hint}`);
+    const keystroke = action.name === 'press' && isString(a[0]) && SINGLE_KEY.test(a[0].text);
+    this.c.secretFocus = secretLocator ? { hint: locator.hint, description: locator.description } : undefined;
+    if (!(keystroke && secretLocator)) this.c.secretTyped = undefined;
+    if ((action.name === 'fill' || action.name === 'pressSequentially') && a[0]) return [`await actions.${wrapper}(${target}, ${this.c.value(a[0], locator)});`];
+    if (keystroke && secretLocator) {
+      // a password typed one key press at a time: written once, as one value read from the environment
+      if (this.c.secretTyped === locator.hint) return [];
+      this.c.secretTyped = locator.hint;
+      return [`await actions.type(${target}, ${this.c.secret(locator.hint, this.c.secretEnvName(locator))});`];
+    }
     if (action.name === 'selectOption' && a[0] && isString(a[0])) return [`await actions.selectOption(${target}, ${this.c.value(a[0], locator)});`];
     if (action.name === 'setInputFiles' && a[0]) {
       if (ts.isArrayLiteralExpression(a[0]) && a[0].elements.length === 0) return [`await actions.clearFiles(${target});`];
@@ -683,7 +923,7 @@ class StatementConverter {
       const dest = this.c.locator(a[0], { register: true });
       return [`await actions.dragAndDrop(${target}, ${dest ? dest.code : this.c.arg(a[0])});`];
     }
-    if (wrapper) return [`await actions.${wrapper}(${[target, ...a.map((n) => this.c.arg(n))].join(', ')});`];
+    if (wrapper) return [`await actions.${wrapper}(${[target, ...a.map((n) => this.c.safeArg(n))].join(', ')});`];
     return this.raw(statement, `locator.${action.name}() has no framework wrapper`);
   }
 
@@ -693,6 +933,10 @@ class StatementConverter {
     const first = links[0];
     const second = links[1];
     const a = first?.args ?? [];
+    if (!(first?.name === 'keyboard')) {
+      this.c.secretFocus = undefined;
+      this.c.secretTyped = undefined;
+    }
     this.c.use('actions');
     if (!first) return this.raw(statement, 'a bare page reference');
     if (links.length === 1 && first.call) {
@@ -741,8 +985,21 @@ class StatementConverter {
     }
     if (links.length === 2 && first.name === 'keyboard' && !first.call && second?.call) {
       const b = second.args;
-      if (second.name === 'press' && b[0]) return [`await actions.pressOnPage(${page}, ${this.c.arg(b[0])});`];
-      if (second.name === 'type' && b[0]) return [`await actions.typeOnPage(${page}, ${isString(b[0]) ? this.c.constant('inputs', 'typedText', quote(b[0].text)) : this.c.arg(b[0])});`];
+      const focus = this.c.secretFocus;
+      if (second.name === 'press' && b[0]) {
+        // keys pressed one by one into a secret field are its password: written once, as a value read from the environment
+        if (focus && isString(b[0]) && SINGLE_KEY.test(b[0].text)) {
+          if (this.c.secretTyped === focus.hint) return [];
+          this.c.secretTyped = focus.hint;
+          return [`await actions.typeOnPage(${page}, ${this.c.secret(focus.hint, this.c.secretEnvName(focus))});`];
+        }
+        this.c.secretTyped = undefined;
+        return [`await actions.pressOnPage(${page}, ${this.c.safeArg(b[0])});`];
+      }
+      if (second.name === 'type' && b[0]) {
+        if (isString(b[0]) && focus) return [`await actions.typeOnPage(${page}, ${this.c.secret(focus.hint, this.c.secretEnvName(focus))});`];
+        return [`await actions.typeOnPage(${page}, ${isString(b[0]) ? this.c.constant('inputs', 'typedText', quote(b[0].text)) : this.c.safeArg(b[0])});`];
+      }
     }
     if (links.length === 2 && first.name === 'mouse' && !first.call && second?.call) {
       const b = second.args;
@@ -790,7 +1047,12 @@ class StatementConverter {
     const suffix = EXPECTED_SUFFIX[e.matcher] ?? pascal(e.matcher.replace(/^toHave|^to/, ''));
     const hint = camel(`${subject} ${e.negated ? 'not ' : ''}${suffix}`);
     const skip = e.matcher === 'toMatchAriaSnapshot' || e.matcher === 'toHaveScreenshot';
-    const args = e.args.map((n, index) => (index === valueIndex && !skip ? this.c.expected(n, hint) : this.c.arg(n)));
+    // what a password / token field is expected to contain is the secret itself: read from the environment, never written
+    const secretValue = locator !== undefined && ['toHaveValue', 'toHaveValues'].includes(e.matcher) && SECRET_HINT.test(`${locator.description} ${locator.hint}`);
+    const args = e.args.map((n, index) => {
+      if (secretValue && index === 0 && isString(n)) return this.c.secret(locator.hint, this.c.secretEnvName(locator));
+      return index === valueIndex && !skip ? this.c.expected(n, hint) : this.c.safeArg(n);
+    });
     return [`await assertions.${e.negated ? 'not.' : ''}${e.matcher}(${[target, ...args].join(', ')});`];
   }
 
@@ -801,26 +1063,37 @@ class StatementConverter {
     this.c.todos++;
     this.c.warn(statement, `kept as Playwright code: ${why}`);
     this.c.usesExpect ||= /\bexpect\b/.test(this.c.text(statement));
-    const source = this.c.text(statement);
+    const source = this.c.scrubbed(statement);
     return [`// TODO(converter): ${why}`, ...source.split('\n')];
   }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** How a recorded test is marked: `test.skip(...)`, `test.fixme(...)`, `test.fail(...)`, `test.only(...)`. */
+type Modifier = 'skip' | 'fixme' | 'fail' | 'only';
+const MODIFIER_RANK: Modifier[] = ['skip', 'fixme', 'fail', 'only'];
+/** The stronger of two modifiers (a skipped test inside `describe.only` stays skipped). */
+const stronger = (a: Modifier | undefined, b: Modifier | undefined): Modifier | undefined =>
+  a === undefined ? b : b === undefined ? a : (MODIFIER_RANK.indexOf(a) <= MODIFIER_RANK.indexOf(b) ? a : b);
+
 interface FoundTest {
   title: string;
   statements: readonly ts.Statement[];
   fixtures: string[];
   node: ts.Node;
+  /** skip / fixme / fail / only - from the test itself or an enclosing describe. Never dropped: a skipped test must not come back live. */
+  modifier?: Modifier;
 }
 
-function findTests(sf: ts.SourceFile): { tests: FoundTest[]; uses: ts.Statement[]; library: boolean } {
+function findTests(sf: ts.SourceFile): { tests: FoundTest[]; uses: ts.Statement[]; library: boolean; warnings: string[] } {
   const tests: FoundTest[] = [];
   const uses: ts.Statement[] = [];
+  const warnings: string[] = [];
   let library = false;
+  const lineOf = (node: ts.Node) => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
 
-  const visit = (statement: ts.Statement) => {
+  const visit = (statement: ts.Statement, inherited: Modifier | undefined, depth: number) => {
     if (!ts.isExpressionStatement(statement)) return;
     const expr = statement.expression;
     if (ts.isCallExpression(expr)) {
@@ -830,20 +1103,31 @@ function findTests(sf: ts.SourceFile): { tests: FoundTest[]; uses: ts.Statement[
         uses.push(statement);
         return;
       }
-      if (/^test(\.(only|skip|fixme|slow))?$/.test(calleeText)) {
+      const testCall = /^test(?:\.(only|skip|fixme|fail|slow))?$/.exec(calleeText);
+      if (testCall) {
         const fn = expr.arguments.find((a): a is ts.ArrowFunction | ts.FunctionExpression => ts.isArrowFunction(a) || ts.isFunctionExpression(a));
         const title = isString(expr.arguments[0]) ? expr.arguments[0].text : 'test';
+        // test.skip(title, body) defines a skipped test; test.skip(condition, reason) / test.skip(({ browserName }) => ...) skips what encloses it
+        const defines = !!fn && isString(expr.arguments[0]);
+        if (!defines && (testCall[1] === 'skip' || testCall[1] === 'fixme')) {
+          uses.push(statement);
+          if (depth > 0) warnings.push(`line ${lineOf(statement)}: "${calleeText}(...)" inside a describe is kept at the top of the file, so it applies to every converted test (more skipped, never fewer)`);
+          return;
+        }
         if (fn && ts.isBlock(fn.body)) {
           const fixtures: string[] = [];
           const first = fn.parameters[0]?.name;
           if (first && ts.isObjectBindingPattern(first)) for (const element of first.elements) fixtures.push(element.name.getText(sf));
-          tests.push({ title, statements: fn.body.statements, fixtures, node: statement });
+          const own = testCall[1] && testCall[1] !== 'slow' ? (testCall[1] as Modifier) : undefined;
+          tests.push({ title, statements: fn.body.statements, fixtures, node: statement, modifier: stronger(own, inherited) });
         }
         return;
       }
-      if (calleeText === 'test.describe' || calleeText.startsWith('test.describe.')) {
+      const describe = /^test\.describe(?:\.(only|skip|fixme|fail|serial|parallel|configure))*$/.test(calleeText) ? calleeText.split('.').slice(2) : undefined;
+      if (describe) {
         const fn = expr.arguments.find((a): a is ts.ArrowFunction | ts.FunctionExpression => ts.isArrowFunction(a) || ts.isFunctionExpression(a));
-        if (fn && ts.isBlock(fn.body)) fn.body.statements.forEach(visit);
+        const own = describe.find((m): m is Modifier => ['only', 'skip', 'fixme', 'fail'].includes(m));
+        if (fn && ts.isBlock(fn.body)) fn.body.statements.forEach((child) => visit(child, stronger(own, inherited), depth + 1));
         return;
       }
       // (async () => { ... })();   the library format
@@ -854,8 +1138,8 @@ function findTests(sf: ts.SourceFile): { tests: FoundTest[]; uses: ts.Statement[
       }
     }
   };
-  sf.statements.forEach(visit);
-  return { tests, uses, library };
+  sf.statements.forEach((statement) => visit(statement, undefined, 0));
+  return { tests, uses, library, warnings };
 }
 
 /** In the library format the recording builds its own browser: drop that scaffolding. */
@@ -884,7 +1168,7 @@ function dropLibraryScaffolding(statements: readonly ts.Statement[], c: Converte
 
 const SECTION_COMMENTS: Record<string, string> = {
   urls: 'pages the recording visited (relative to BASE_URL)',
-  inputs: 'what the recording typed, selected or uploaded - secrets are read from the environment',
+  inputs: 'what the recording typed, selected or uploaded - recognised secrets are read from the environment',
   expected: 'what the recording checked',
 };
 
@@ -928,18 +1212,19 @@ function csvEscape(value: string): string {
 /**
  * Converts what `npx playwright codegen` records (the `playwright-test` TypeScript output, or the `library` JavaScript
  * output) into a test written the way this framework is meant to be used: `actions`, `locators`, `assertions`,
- * the popup / download / dialog / file-chooser helpers - with passwords and tokens read from the environment, fixed
+ * the popup / download / dialog / file-chooser helpers - with the passwords and tokens it recognises read from the environment, fixed
  * waits removed, and anything that has no wrapper kept as marked, plain Playwright.
  */
 export function convertCodegen(text: string, options: ConvertOptions): ConvertResult {
   const sf = ts.createSourceFile('recording.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const { tests, uses, library } = findTests(sf);
+  const { tests, uses, library, warnings: findWarnings } = findTests(sf);
   if (tests.length === 0) {
     throw new Error(`No Playwright test found in ${options.source}. Expected what "npx playwright codegen" records: test('...', async ({ page }) => { ... }).`);
   }
 
   const baseName = options.baseName ?? path.basename(options.source).replace(/\.[^.]+$/, '').replace(/\.spec$/, '');
   const converter = new Converter(sf, options);
+  converter.warnings.push(...findWarnings);
   const statements = new StatementConverter(converter);
   const tag = options.tag ?? '@ui';
 
@@ -962,13 +1247,17 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
     if (options.pageObjects) inner.push(`const ui = create${pageName}Page(page);`);
     inner.push(...lines);
     const titleCode = options.data ? `\`${title.replace(/[`\\$]/g, '\\$&')} #\${index + 1} ${tag}\`` : quote(`${title} ${tag}`.trim());
+    const callee = found.modifier ? `test.${found.modifier}` : 'test';
+    if (found.modifier === 'only') converter.warnings.push(`"${title}" was recorded as test.only: kept, but \`forbidOnly\` fails CI runs while it is there`);
     const testLines = [
-      `test(${titleCode}, async ({ ${[...fixtures].join(', ')} }) => {`,
+      `${callee}(${titleCode}, async ({ ${[...fixtures].join(', ')} }) => {`,
       ...inner.map((l) => (l === '' ? '' : `  ${l}`)),
       '});',
     ];
     bodies.push(...(options.data ? ['for (const [index, row] of rows.entries()) {', ...testLines.map((l) => `  ${l}`), '}'] : testLines), '');
   }
+  // test.use({ ... }) / test.skip(...) at file level: scrubbed now, so the spec knows whether it needs `env`
+  const usesCode = uses.map((u) => converter.scrubbed(u));
   if (converter.origins.size > 1 && !options.keepHost) {
     converter.warnings.push(`The recording visited ${converter.origins.size} different origins (${[...converter.origins].join(', ')}); BASE_URL can only be one - use --keep-host to keep full URLs`);
   }
@@ -979,7 +1268,7 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
   const names = [...converter.imports].sort();
   const importLines: string[] = [];
   if (options.data) importLines.push("import * as path from 'node:path';");
-  const specUsesEnv = converter.usesEnv && !options.pageObjects; // with a page object, CONSTANTS (and so `env`) live in its file
+  const specUsesEnv = converter.usesEnvInBody || (converter.usesEnv && !options.pageObjects); // with a page object, CONSTANTS (and so `env`) live in its file
   const utilsNames = [...(specUsesEnv ? ['loadEnv'] : []), ...(options.data ? ['csvUtils'] : [])];
   if (utilsNames.length > 0) importLines.push(`import { ${utilsNames.join(', ')} } from '@automation/referenced-automation-utils';`);
   const testNames = ['test', ...(converter.usesExpect ? ['expect'] : [])];
@@ -1015,7 +1304,10 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
   const header = [
     `// Generated by ui-codegen-to-playwright from ${options.source}.`,
     '// Edit freely - or keep the recording as the source of truth and convert it again to a new file.',
-    ...(converter.envVars.size > 0 ? [`// Typed secrets are never written into the test; set: ${[...converter.envVars].sort().join(', ')}`] : []),
+    // What is true: values typed into fields named like a secret, and credentials the converter recognises (cookies, auth
+    // headers, URL tokens, ...), are read from the environment. A secret it does not recognise is written as recorded.
+    '// Secrets the converter recognised are read from the environment (not written here); review the file for any it did not before committing.',
+    ...(converter.envVars.size > 0 ? [`// Set: ${[...converter.envVars].sort().join(', ')}`] : []),
     ...(origins.length > 0 && !options.keepHost ? [`// Paths are relative to BASE_URL - set it to ${origins[0]} to open what was recorded.`] : []),
   ];
   const specCode = [
@@ -1024,7 +1316,7 @@ export function convertCodegen(text: string, options: ConvertOptions): ConvertRe
     '',
     ...(preamble.length > 0 ? [...preamble, ''] : []),
     ...(options.pageObjects ? [] : [...constantsBlock(converter, false), ...locatorsBlock(converter, false)]),
-    ...(uses.length > 0 ? [...uses.map((u) => converter.text(u)), ''] : []),
+    ...(usesCode.length > 0 ? [...usesCode, ''] : []),
     ...bodies,
   ]
     .join('\n')

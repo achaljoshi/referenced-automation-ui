@@ -1,4 +1,4 @@
-import { test as base, type BrowserContext, type Page } from '@playwright/test';
+import { test as base, type BrowserContext, type Page, type TestInfo, type Video } from '@playwright/test';
 import { getCorrelationId, logger, placeholders, useTestCorrelation } from '@automation/referenced-automation-utils';
 import { guardPage, type PageGuard } from '../diagnostics/pageGuard';
 import { UiScenario } from '../bdd/scenario';
@@ -85,16 +85,54 @@ export const test = base.extend<UiFixtures & {
     if (failOnPageProblems && testInfo.status === testInfo.expectedStatus) guard.expectClean();
   },
 
-  pageAs: async ({ browser }, use) => {
-    const contexts: BrowserContext[] = [];
+  pageAs: async ({ browser, baseURL, video }, use, testInfo) => {
+    const opened: Array<{ context: BrowserContext; videos: Video[] }> = [];
     await use(async (storageStateFile, contextOptions = {}) => {
-      const context = await browser.newContext({ ...contextOptions, storageState: storageStateFile });
-      contexts.push(context);
-      return context.newPage();
+      // The project's `use` options (viewport, locale, headers, ...) and `use.trace` (one trace.zip for every context of the
+      // test) already apply to browser.newContext(); baseURL is passed on explicitly. Video is the one thing Playwright only
+      // wires into its own `context` fixture, so it is done here.
+      const recordVideo = recordsNow(video, testInfo);
+      const context = await browser.newContext({
+        baseURL,
+        ...(recordVideo ? { recordVideo: { dir: testInfo.outputPath(`pageAs-${opened.length + 1}-video`), ...(typeof video === 'object' && video.size ? { size: video.size } : {}) } } : {}),
+        ...contextOptions,
+        storageState: storageStateFile,
+      });
+      const entry = { context, videos: [] as Video[] };
+      context.on('page', (created) => void (created.video() && entry.videos.push(created.video() as Video)));
+      opened.push(entry);
+      const page = await context.newPage();
+      return page;
     });
-    for (const context of contexts) await context.close();
+    const failed = testInfo.status !== testInfo.expectedStatus;
+    for (const [index, { context, videos }] of opened.entries()) {
+      const name = `pageAs-${index + 1}`;
+      await context.close();
+      for (const recording of videos) {
+        if (keepsArtifact(video, testInfo, failed)) await testInfo.attach(`${name}-video`, { path: await recording.path(), contentType: 'video/webm' });
+        else await recording.delete().catch(() => undefined);
+      }
+    }
   },
 });
+
+type CaptureMode = string | { mode: string; size?: { width: number; height: number } };
+const modeOf = (option: CaptureMode | undefined) => (typeof option === 'object' ? option.mode : option ?? 'off');
+
+/** Whether video should be recording during this attempt (Playwright's `use.video` modes). */
+function recordsNow(option: CaptureMode | undefined, testInfo: TestInfo): boolean {
+  const mode = modeOf(option);
+  if (mode === 'on-first-retry') return testInfo.retry === 1;
+  if (mode === 'on-all-retries') return testInfo.retry > 0;
+  return mode !== 'off';
+}
+
+/** Whether what was recorded is kept (attached) given how the test ended. */
+function keepsArtifact(option: CaptureMode | undefined, testInfo: TestInfo, failed: boolean): boolean {
+  const mode = modeOf(option);
+  if (mode === 'retain-on-failure') return failed;
+  return mode !== 'off';
+}
 
 /** `test` with `pageGuard` switched on for every test: console errors, exceptions and failed requests are attached to each report (and fail the test with `test.use({ failOnPageProblems: true })`). */
 export const guardedTest = test.extend<{ guard: void }>({

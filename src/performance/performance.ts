@@ -79,7 +79,8 @@ export interface PerformanceBudget {
 }
 
 /**
- * Fails, naming every metric that is over, if the page is slower or less stable than the budget. A guard against
+ * Fails, naming every metric that is over, if the page is slower or less stable than the budget - and fails when a
+ * budgeted metric (LCP, say) was not reported by the browser, instead of skipping it. A guard against
  * regressions in CI - the numbers vary by machine, so set budgets with headroom (and run on the same kind of runner),
  * and use a real performance tool for measuring.
  */
@@ -88,8 +89,11 @@ export async function expectWithinBudget(page: Page, budget: PerformanceBudget):
   const vitals = await webVitals(page);
   logger.info(`Performance: ttfb ${timing.ttfb}ms, DCL ${timing.domContentLoaded}ms, load ${timing.load}ms, LCP ${vitals.lcp ?? 'n/a'}ms, CLS ${vitals.cls}`);
   const over: string[] = [];
+  const unreported: string[] = [];
   const check = (name: string, actual: number | undefined, limit: number | undefined, unit: string) => {
-    if (limit !== undefined && actual !== undefined && actual > limit) over.push(`${name} ${actual}${unit} > ${limit}${unit}`);
+    if (limit === undefined) return;
+    if (actual === undefined) unreported.push(name);
+    else if (actual > limit) over.push(`${name} ${actual}${unit} > ${limit}${unit}`);
   };
   check('TTFB', timing.ttfb, budget.ttfbMs, 'ms');
   check('DOMContentLoaded', timing.domContentLoaded, budget.domContentLoadedMs, 'ms');
@@ -97,6 +101,14 @@ export async function expectWithinBudget(page: Page, budget: PerformanceBudget):
   check('LCP', vitals.lcp, budget.lcpMs, 'ms');
   check('CLS', vitals.cls, budget.cls, '');
   check('transfer size', timing.transferSize, budget.transferBytes, ' bytes');
+  // A budget on a metric the browser did not report cannot be met or missed: that is a failed check, not a pass.
+  if (unreported.length > 0) {
+    throw new Error(
+      `The browser did not report ${unreported.join(', ')}, which the budget limits - it cannot be checked. ` +
+        `Headless Chromium shell reports no paint metrics: run headed or with \`channel: 'chromium'\`, or drop the budget for that metric.` +
+        (over.length > 0 ? ` Also over the performance budget: ${over.join('; ')}` : ''),
+    );
+  }
   if (over.length > 0) throw new Error(`Over the performance budget: ${over.join('; ')}`);
   return { timing, vitals };
 }

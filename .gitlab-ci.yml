@@ -101,11 +101,15 @@ build:
     - npm ci
     - npm run build
     - npm run lint
+    - npm run typecheck
   artifacts:
     paths:
       - dist/
     expire_in: 1 hour
 
+# One leg per browser. `--project=$BROWSER` runs only that browser's project: the `bdd` project that createPlaywrightConfig
+# appends has no browser of its own, so it must not run in a leg that installed a different one - the Gherkin features run
+# once, in the `bdd` job below. tests/accessibility.spec.ts (tagged @a11y) runs once, in the `accessibility` job.
 test:
   stage: test
   needs: ["build"]
@@ -115,7 +119,29 @@ test:
   script:
     - npm ci
     - npx playwright install "$BROWSER"
-    - HEADLESS=true npm test
+    - npm run build
+    - HEADLESS=true npx playwright test --project="$BROWSER" --grep-invert @a11y
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+      - playwright-report/
+      - allure-results/
+      - logs/
+    reports:
+      junit: test-results/junit.xml
+    expire_in: 30 days
+
+# The Gherkin features, once, in Chromium (`bddgen` turns them into tests first).
+bdd:
+  stage: test
+  needs: ["build"]
+  variables:
+    BROWSER: chromium
+  script:
+    - npm ci
+    - npx playwright install chromium
+    - HEADLESS=true npm run test:bdd
   artifacts:
     when: always
     paths:
@@ -133,7 +159,8 @@ accessibility:
   script:
     - npm ci
     - npx playwright install chromium
-    - HEADLESS=true npx playwright test tests/accessibility.spec.ts
+    - npm run build
+    - HEADLESS=true npx playwright test --project=chromium --grep @a11y
   artifacts:
     when: always
     paths:
@@ -155,14 +182,33 @@ security:
   script:
     - npm ci
     - npx automation-scan-secrets
-    - npx automation-audit-gate
+    - npx automation-audit-gate --allow-unassigned
+
+# ---- Fortnightly framework audit (start it by hand: "Run pipeline" is not needed, use this job's play button) ----
+#
+# The automated part of the audit (docs/governance/AUDIT.md in referenced-automation-utils): waits, skips, assertions,
+# traceability, dependencies, governance files, pipeline and documentation consistency. The report is the job's artifact.
+# Set AUDIT_RUN_GATES=1 on the pipeline to also run lint, typecheck, test and security inside this job (slow).
+audit:
+  stage: report
+  needs: ["build"]
+  when: manual
+  allow_failure: true
+  script:
+    - npm ci
+    - npx automation-framework-audit --out audit-reports ${AUDIT_RUN_GATES:+--run}
+  artifacts:
+    when: always
+    paths:
+      - audit-reports/
+    expire_in: 90 days
 
 pages:
   stage: report
   # Reuses the same image as every other job (rather than node:20-slim) -
   # anything not mirrored into Artifactory fails to pull on this network,
   # and this image already has Node.js, so there's no need for a second one.
-  needs: ["test", "accessibility"]
+  needs: ["test", "bdd", "accessibility"]
   script:
     - npm install -g allure-commandline --silent
     - allure generate allure-results --clean -o public

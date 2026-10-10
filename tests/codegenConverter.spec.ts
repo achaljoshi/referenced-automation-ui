@@ -682,3 +682,222 @@ test.describe('ui-codegen-to-playwright command', () => {
     expect(run(['-', '--stdout'], 'const x = 1;').stderr).toContain('No Playwright test found');
   });
 });
+
+// SEC-05: every place a recording can hold a literal credential is handled like a typed password - not only fill().
+test.describe('credentials in every literal sink', () => {
+  const BASIC = ['basic', 'pass', '1'].join('-'); // assembled: a literal password in a fixture would be flagged by the repo's own secret scan
+  const SECRETS = ['hunter2-pw', 'sess-cookie-9X', 'Bearer-abcdef123456', 'tok-URL-77', 'jwt-body-secret', BASIC, 'pin-1234-xyz'];
+  const noneOf = (code: string, secrets = SECRETS) => {
+    for (const secret of secrets) expect(code, `"${secret}" must not be written into the test`).not.toContain(secret);
+  };
+
+  test('keyboard typing and key-by-key presses into a password field are one value from the environment', () => {
+    const { spec, envVars } = convert(`
+  await page.getByLabel('Password').click();
+  await page.keyboard.type('hunter2-pw');
+  await page.getByLabel('Search').click();
+  await page.keyboard.type('plain search text');`);
+    noneOf(spec);
+    expect(spec).toContain("actions.typeOnPage(page, env.get('UI_PASSWORD'))");
+    expect(spec).toContain("'plain search text'"); // not secret: kept
+    expect(envVars).toEqual(['UI_PASSWORD']);
+
+    const keys = convert(`
+  await page.getByLabel('Password').click();
+  await page.keyboard.press('h');
+  await page.keyboard.press('u');
+  await page.keyboard.press('n');
+  await page.keyboard.press('Shift+T');
+  await page.keyboard.press('Enter');`);
+    expect(keys.spec.match(/typeOnPage/g)).toHaveLength(1);
+    expect(keys.spec).toContain("pressOnPage(page, 'Enter')");
+    expect(keys.spec).not.toMatch(/press(OnPage)?\(page, '[hunT]'\)|Shift\+T/);
+
+    const locatorKeys = convert(`
+  await page.getByLabel('Password').press('h');
+  await page.getByLabel('Password').press('u');`);
+    expect(locatorKeys.spec.match(/actions\.type\(/g)).toHaveLength(1);
+    expect(locatorKeys.spec).not.toMatch(/pressKey/);
+  });
+
+  test('pressSequentially into a password field reads the environment', () => {
+    const { spec } = convert(`await page.getByLabel('Password').pressSequentially('hunter2-pw');`);
+    noneOf(spec);
+    expect(spec).toContain("actions.type(locators.byLabel(page, 'Password'), env.get('UI_PASSWORD'))");
+  });
+
+  test('cookies, extra headers and credentials in browser options are replaced; harmless values stay', () => {
+    const { spec, envVars, warnings } = convert(`
+  await context.addCookies([{ name: 'session', value: 'sess-cookie-9X', domain: 'app.test', path: '/' }, { name: 'theme', value: 'dark', url: 'https://app.test' }]);
+  await context.setExtraHTTPHeaders({ Authorization: 'Bearer-abcdef123456', 'X-Feature': 'on', 'x-api-key': 'jwt-body-secret' });
+  await page.route('**/api', (route) => route.continue({ headers: { ...route.request().headers(), Cookie: 'sid=sess-cookie-9X' } }));`);
+    noneOf(spec);
+    expect(spec).toContain("value: env.get('UI_COOKIE_SESSION')");
+    expect(spec).toContain("Authorization: env.get('UI_AUTHORIZATION')");
+    expect(spec).toContain("'x-api-key': env.get('UI_X_API_KEY')");
+    expect(spec).toContain("'X-Feature': 'on'");
+    expect(spec).toContain("value: env.get('UI_COOKIE_THEME')");
+    expect(spec).toContain('const env = loadEnv();');
+    expect(envVars).toEqual(expect.arrayContaining(['UI_COOKIE_SESSION', 'UI_AUTHORIZATION', 'UI_X_API_KEY', 'UI_COOKIE']));
+    expect(warnings.some((w) => /cookie "session"/.test(w))).toBe(true);
+  });
+
+  test('tokens in URLs (goto, expected URL) are read from the environment', () => {
+    const { spec } = convert(`
+  await page.goto('https://app.test/cb?lang=en&token=tok-URL-77&next=%2Fhome');
+  await expect(page).toHaveURL('https://app.test/done?access_token=tok-URL-77');
+  await expect(page).toHaveURL(/done\\?api_key=tok-URL-77/);`);
+    noneOf(spec);
+    expect(spec).toMatch(/`\/cb\?lang=en&token=\$\{env\.get\('UI_URL_TOKEN'\)\}&next=%2Fhome`/);
+    expect(spec).toContain('lang=en'); // the rest of the URL is intact
+    expect(spec).toMatch(/access_token=\$\{env\.get\('UI_URL_ACCESS_TOKEN'\)\}/);
+    expect(spec).toMatch(/api_key=\[\^&#\]\+/); // a pattern cannot read the environment: wildcard
+  });
+
+  test('credentials in the userinfo part of a URL are not kept', () => {
+    const withCredentials = `await page.goto('https://ada${':'}${BASIC}${'@'}app.test/admin');`; // assembled: not a URL with a password to the repo's own secret scan
+    const { spec, origins, warnings } = convert(withCredentials);
+    noneOf(spec);
+    expect(origins).toEqual(['https://app.test']);
+    expect(spec).toContain("'/admin'");
+    expect(warnings.join('\n')).toMatch(/credentials in the URL were removed/);
+    expect(convert(withCredentials, { keepHost: true }).spec).not.toContain(BASIC);
+  });
+
+  test('evaluated code and storage writes with an obvious secret are replaced; ordinary evaluate is untouched', () => {
+    const { spec } = convert(`
+  await page.evaluate(() => localStorage.setItem('token', 'jwt-body-secret'));
+  await page.evaluate("localStorage.setItem('access_token', 'jwt-body-secret')");
+  await page.evaluate("document.cookie = 'session=sess-cookie-9X; path=/'");
+  await page.evaluate(() => document.title);
+  await page.fill('#password', 'hunter2-pw');
+  await page.frameLocator('iframe').getByLabel('PIN').fill('pin-1234-xyz');`);
+    noneOf(spec);
+    // browser code cannot read this process's environment: the value is handed in as the argument of evaluate
+    expect(spec).toContain("page.evaluate((secrets) => localStorage.setItem('token', secrets.UI_TOKEN), { UI_TOKEN: env.get('UI_TOKEN') })");
+    expect(spec).toMatch(/setItem\('access_token', '\$\{env\.get\('UI_ACCESS_TOKEN'\)\}'\)/);
+    expect(spec).toMatch(/document\.cookie = 'session=\$\{env\.get\('UI_COOKIE_SESSION'\)\}; path=\/'/);
+    expect(spec).toContain('document.title');
+    expect(spec).toContain("page.fill('#password', env.get('UI_PASSWORD'))");
+    expect(spec).toContain("'PIN'), env.get('UI_PIN'))");
+  });
+
+  test('credentials inside browser-side code that cannot be handed in as an argument are masked, never written', () => {
+    const { spec, warnings } = convert(`await page.evaluate((id) => { sessionStorage.setItem('auth_token', 'jwt-body-secret'); return id; }, 'x');`);
+    noneOf(spec);
+    expect(spec).toContain("sessionStorage.setItem('auth_token', '***')");
+    expect(warnings.join('\n')).toMatch(/runs in the browser and was masked/);
+  });
+
+  test('newContext options and test.use headers / httpCredentials in a recording are scrubbed', () => {
+    const library = convertCodegen(
+      `const { chromium } = require('playwright');\n(async () => {\n  const browser = await chromium.launch();\n  const context = await browser.newContext({ httpCredentials: { username: 'ada', password: '${BASIC}' } });\n  const page = await context.newPage();\n  await context.addCookies([{ name: 'sid', value: 'sess-cookie-9X', url: 'https://app.test' }]);\n  await page.goto('https://app.test/');\n})();`,
+      { source: 'rec.js', inline: true },
+    );
+    noneOf(library.spec);
+    const withUse = convertCodegen(
+      `import { test } from '@playwright/test';\ntest.use({ extraHTTPHeaders: { Authorization: 'Bearer-abcdef123456' }, httpCredentials: { username: 'ada', password: '${BASIC}' } });\ntest('t', async ({ page }) => {\n  await page.goto('https://app.test/');\n});\n`,
+      { source: 'rec.spec.ts', inline: true },
+    );
+    noneOf(withUse.spec);
+    expect(withUse.spec).toContain("password: env.get('UI_PASSWORD')");
+    expect(withUse.spec).toContain('const env = loadEnv();');
+    // the env read is declared before test.use runs
+    expect(withUse.spec.indexOf('const env = loadEnv()')).toBeLessThan(withUse.spec.indexOf('test.use('));
+  });
+
+  test('the expected value of a password field is read from the environment', () => {
+    const { spec } = convert(`await expect(page.getByLabel('Password')).toHaveValue('hunter2-pw');`);
+    noneOf(spec);
+    expect(spec).toContain("assertions.toHaveValue(locators.byLabel(page, 'Password'), env.get('UI_PASSWORD'))");
+  });
+
+  test('page-object mode: a credential in the test body still gets its own `env`, the page object does not import loadEnv for it', () => {
+    const { spec, pageObject } = convertWithObjects(`await page.goto('https://app.test/');\n  await context.setExtraHTTPHeaders({ Authorization: 'Bearer-abcdef123456' });\n  await page.getByRole('button', { name: 'Go' }).click();`, { pageObjects: true, baseName: 'Flow' });
+    noneOf(spec);
+    expect(spec).toContain("import { loadEnv } from '@automation/referenced-automation-utils';");
+    expect(spec).toContain('const env = loadEnv();');
+    expect(pageObject?.code).not.toContain('loadEnv');
+  });
+
+  test('constants mode: a URL token becomes a getter in CONSTANTS and no literal remains', () => {
+    const { spec } = convertWithObjects(`await page.goto('https://app.test/cb?token=tok-URL-77');`);
+    noneOf(spec);
+    expect(spec).toMatch(/get cb\(\) \{\s*return `\/cb\?token=\$\{env\.get\('UI_URL_TOKEN'\)\}`;/);
+  });
+
+  test('the header comment says what is true: recognised secrets are replaced, others may remain', () => {
+    const { spec } = convert(`await page.getByLabel('Password').fill('hunter2-pw');`);
+    expect(spec).not.toMatch(/never written/i);
+    expect(spec).toMatch(/Secrets the converter recognised are read from the environment .*review the file/);
+    expect(spec).toContain('// Set: UI_PASSWORD');
+    // and it is there even when nothing was recognised
+    expect(convert(`await page.getByText('x').click();`).spec).toMatch(/review the file/);
+  });
+});
+
+// SEC-05: a skipped test must never come back live.
+test.describe('test.skip / test.fixme / test.only / test.fail annotations are preserved', () => {
+  const recording = (body: string) => `import { test, expect } from '@playwright/test';\n\n${body}\n`;
+  const titles = (spec: string) => spec.split('\n').filter((l) => /^test(\.\w+)?\(/.test(l)).map((l) => l.replace(/, async.*$/, ''));
+
+  test('on the test itself', () => {
+    const { spec, warnings } = convertCodegen(
+      recording(`
+test.skip('skipped one', async ({ page }) => { await page.goto('https://app.test/a'); });
+test.fixme('broken one', async ({ page }) => { await page.goto('https://app.test/b'); });
+test.only('focused one', async ({ page }) => { await page.goto('https://app.test/c'); });
+test.fail('expected failure', async ({ page }) => { await page.goto('https://app.test/d'); });
+test('plain', async ({ page }) => { await page.goto('https://app.test/e'); });`),
+      { source: 'rec.spec.ts', inline: true },
+    );
+    expect(titles(spec)).toEqual(["test.skip('skipped one @ui'", "test.fixme('broken one @ui'", "test.only('focused one @ui'", "test.fail('expected failure @ui'", "test('plain @ui'"]);
+    expect(warnings.join('\n')).toMatch(/test\.only.*forbidOnly/);
+  });
+
+  test('inherited from the describe: describe.skip / fixme / only reach every test inside; an own annotation wins', () => {
+    const { spec } = convertCodegen(
+      recording(`
+test.describe.skip('group', () => {
+  test('inside skipped group', async ({ page }) => { await page.goto('https://app.test/a'); });
+  test.fixme('fixme in skipped group', async ({ page }) => { await page.goto('https://app.test/b'); });
+});
+test.describe.only('focused group', () => {
+  test('inside focused group', async ({ page }) => { await page.goto('https://app.test/c'); });
+  test.skip('skip in focused group', async ({ page }) => { await page.goto('https://app.test/d'); });
+});
+test.describe('open group', () => {
+  test('inside open group', async ({ page }) => { await page.goto('https://app.test/e'); });
+});`),
+      { source: 'rec.spec.ts', inline: true },
+    );
+    expect(titles(spec)).toEqual([
+      "test.skip('inside skipped group @ui'",
+      "test.skip('fixme in skipped group @ui'",
+      "test.only('inside focused group @ui'",
+      "test.skip('skip in focused group @ui'",
+      "test('inside open group @ui'",
+    ]);
+  });
+
+  test('a conditional skip (test.skip(condition, reason)) is kept, at the top of the file, so its tests stay skipped', () => {
+    const { spec, warnings } = convertCodegen(
+      recording(`
+test.skip(({ browserName }) => browserName === 'webkit', 'not on webkit');
+test.describe('group', () => {
+  test.fixme(true, 'known bug');
+  test('t', async ({ page }) => { await page.goto('https://app.test/a'); });
+});`),
+      { source: 'rec.spec.ts', inline: true },
+    );
+    expect(spec).toContain("test.skip(({ browserName }) => browserName === 'webkit', 'not on webkit');");
+    expect(spec).toContain("test.fixme(true, 'known bug');");
+    expect(spec.indexOf('test.fixme(true')).toBeLessThan(spec.indexOf("test('t @ui'"));
+    expect(warnings.join('\n')).toMatch(/inside a describe is kept at the top of the file/);
+  });
+
+  test('data mode keeps the annotation on the generated test', () => {
+    const { spec } = convertCodegen(recording(`test.skip('skipped', async ({ page }) => { await page.getByLabel('Name').fill('Ada'); });`), { source: 'rec.spec.ts', inline: true, data: true });
+    expect(spec).toMatch(/test\.skip\(`skipped #\$\{index \+ 1\} @ui`/);
+  });
+});

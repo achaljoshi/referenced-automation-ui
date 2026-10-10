@@ -1,6 +1,7 @@
 import { expect, type Locator } from '@playwright/test';
 import { logger } from '@automation/referenced-automation-utils';
 import { step } from '../base/step';
+import { enterSecret, isSecretTarget, shown, type SecretOption } from '../base/secrets';
 
 /**
  * Element-level actions - every one takes the Locator to act on explicitly,
@@ -25,13 +26,28 @@ export async function rightClick(locator: Locator): Promise<void> {
   await step(`Right-click -> ${describe(locator)}`, () => locator.click({ button: 'right' }));
 }
 
-export async function fill(locator: Locator, value: string): Promise<void> {
-  await step(`Fill "${value}" -> ${describe(locator)}`, () => locator.fill(value));
+/**
+ * Fills a field. A secret value is never written to the step title, the log or an error message (`***` instead):
+ * automatically for a password input or a field whose name / label / test id looks secret, or with `{ secret: true }`
+ * (see `SecretOption`). A secret is entered through the page rather than `locator.fill`, because Playwright's own
+ * `Fill "<value>"` step would print it.
+ */
+export async function fill(locator: Locator, value: string, options: SecretOption = {}): Promise<void> {
+  const secret = await isSecretTarget(locator, options.secret);
+  await step(`Fill "${shown(value, secret)}" -> ${describe(locator)}`, () => (secret ? enterSecret(locator, value, 'fill') : locator.fill(value)), {
+    redact: secret ? [value] : undefined,
+  });
 }
 
-/** Types character-by-character (real keydown/keyup events) instead of setting the value directly. */
-export async function type(locator: Locator, value: string): Promise<void> {
-  await step(`Type "${value}" -> ${describe(locator)}`, () => locator.pressSequentially(value));
+/**
+ * Types character-by-character (real keydown/keyup events) instead of setting the value directly. Secrets are masked
+ * like in `fill`; a secret is typed with synthetic key events (`isTrusted` is false).
+ */
+export async function type(locator: Locator, value: string, options: SecretOption = {}): Promise<void> {
+  const secret = await isSecretTarget(locator, options.secret);
+  await step(`Type "${shown(value, secret)}" -> ${describe(locator)}`, () => (secret ? enterSecret(locator, value, 'type') : locator.pressSequentially(value)), {
+    redact: secret ? [value] : undefined,
+  });
 }
 
 export async function clear(locator: Locator): Promise<void> {
@@ -101,13 +117,23 @@ export async function getAttribute(locator: Locator, name: string): Promise<stri
  * return as soon as it does - a page that is already there costs nothing.
  *
  * The flip side: if the state never arrives they take the full timeout to
- * answer `false` / `0` / `[]`. For "should NOT be there" checks use
- * `assertions.toBeHidden` / `assertions.not.*` (they return the moment it's
- * gone), or pass `{ timeout: 0 }` for a true instant snapshot.
+ * answer `false` / `0` / `[]`. Only that timeout is swallowed: a locator that
+ * matches several elements (strict mode), a closed page or an invalid selector
+ * throws, because "false" would hide a broken test. For "should NOT be there"
+ * checks use `assertions.toBeHidden` / `assertions.not.*` (web-first: they retry
+ * until it is gone and fail with the page's state). `{ timeout: 0 }` is a
+ * 1 ms snapshot - fine for "has it already happened?", never for "it is absent",
+ * because it passes before the page has had time to render the thing.
  */
 export interface StateReadOptions {
   /** How long to wait for the state to arrive. Defaults to the configured assertion timeout; 0 = look once, don't wait. */
   timeout?: number;
+}
+
+/** True for the failure of an `expect` that ran out of time (`matcherResult.timeout` is set only then), false for strict-mode, closed-page and selector errors. */
+function isTimeout(error: unknown): boolean {
+  const result = (error as { matcherResult?: { timeout?: number } } | undefined)?.matcherResult;
+  return result !== undefined && result.timeout !== undefined;
 }
 
 async function reaches(assertion: (timeout: number | undefined) => Promise<void>, options?: StateReadOptions): Promise<boolean> {
@@ -115,8 +141,9 @@ async function reaches(assertion: (timeout: number | undefined) => Promise<void>
     // timeout 0 would mean "no timeout" to Playwright's expect, so a snapshot is a 1ms look instead.
     await assertion(options?.timeout === 0 ? 1 : options?.timeout);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isTimeout(error)) return false;
+    throw error;
   }
 }
 

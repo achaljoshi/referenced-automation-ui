@@ -78,4 +78,34 @@ test.describe('late-rendering page, with no waits anywhere in the test code @smo
     expect(await actions.count(page.locator('.nothing'), { timeout: 200 })).toBe(0);
     expect(await actions.allText(page.locator('.nothing'), { timeout: 200 })).toEqual([]);
   });
+
+  // UI-01: only the timeout is "the state never arrived". Everything else is a broken test and must say so.
+  test('a locator matching several elements throws (strict mode) instead of answering false / 0', async ({ page }) => {
+    await page.setContent('<b>one</b><b>two</b>');
+    await expect(actions.isVisible(page.locator('b'), { timeout: 300 })).rejects.toThrow(/strict mode violation/);
+    await expect(actions.isEnabled(page.locator('b'), { timeout: 300 })).rejects.toThrow(/strict mode violation/);
+    await expect(actions.isChecked(page.locator('b'), { timeout: 300 })).rejects.toThrow(/strict mode violation/);
+  });
+
+  test('a closed page throws instead of answering false', async ({ context }) => {
+    const page = await context.newPage();
+    await page.setContent('<b>one</b>');
+    await page.close();
+    await expect(actions.isVisible(page.locator('b'), { timeout: 300 })).rejects.toThrow();
+    await expect(actions.count(page.locator('b'), { timeout: 300 })).rejects.toThrow();
+    await expect(actions.allText(page.locator('b'), { timeout: 300 })).rejects.toThrow();
+  });
+
+  test('an invalid selector throws instead of answering false', async ({ page }) => {
+    await page.setContent('<b>one</b>');
+    await expect(actions.isVisible(page.locator('css=['), { timeout: 300 })).rejects.toThrow(/selector/i);
+  });
+
+  test('"absent" is asserted web-first: assertions.not.* waits for the thing to go, a 1 ms snapshot passes too early', async ({ page }) => {
+    await page.setContent('<p id="banner">error</p><script>setTimeout(() => document.getElementById("banner").remove(), 400)</script>');
+    // the snapshot is taken while the banner is still there
+    expect(await actions.isVisible(page.locator('#banner'), { timeout: 0 })).toBe(true);
+    await assertions.not.toBeVisible(page.locator('#banner'));
+    await assertions.toBeHidden(page.locator('#banner'));
+  });
 });

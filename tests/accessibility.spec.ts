@@ -1,7 +1,7 @@
 import { test, expect } from './support/fixtures';
 import { checkAccessibility, expectNoAccessibilityViolations, formatViolations } from '../src/accessibility/axeHelper';
 
-test.describe('accessibility (axe-core) @regression', () => {
+test.describe('accessibility (axe-core) @regression @a11y', () => {
   test('the login form has no WCAG 2.1 AA violations', async ({ loginPage, page }) => {
     void loginPage; // fixture's navigation is the setup this test needs; the page object itself isn't used further
     const results = await checkAccessibility(page);

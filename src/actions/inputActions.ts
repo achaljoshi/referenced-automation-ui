@@ -2,6 +2,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { step } from '../base/step';
+import { enterSecret, enterSecretOnPage, isSecretFocus, isSecretTarget, looksSecret, shown, type SecretOption } from '../base/secrets';
 
 /**
  * The input side of Playwright's actions guide that elementActions.ts does not already cover: checkbox state,
@@ -85,9 +86,15 @@ export async function pressOnPage(page: Page, key: string): Promise<void> {
   await step(`Press "${key}" on the page`, () => page.keyboard.press(key));
 }
 
-/** Types into whatever has focus, key by key. */
-export async function typeOnPage(page: Page, text: string, delayMs?: number): Promise<void> {
-  await step(`Type "${text}" on the page`, () => page.keyboard.type(text, { delay: delayMs }));
+/**
+ * Types into whatever has focus, key by key. Masked like `actions.fill` when the focused field is a password input
+ * (or looks secret), or with `{ secret: true }`; a secret is typed with synthetic key events.
+ */
+export async function typeOnPage(page: Page, text: string, delayMs?: number, options: SecretOption = {}): Promise<void> {
+  const secret = await isSecretFocus(page, options.secret);
+  await step(`Type "${shown(text, secret)}" on the page`, () => (secret ? enterSecretOnPage(page, text) : page.keyboard.type(text, { delay: delayMs })), {
+    redact: secret ? [text] : undefined,
+  });
 }
 
 export async function moveMouse(page: Page, x: number, y: number): Promise<void> {
@@ -134,6 +141,8 @@ export type FormValue = string | number | boolean | string[];
  * matches nothing fails with the label named, not a generic timeout.
  */
 export async function fillForm(scope: Page | Locator, values: Record<string, FormValue>, options: { exact?: boolean } = {}): Promise<void> {
+  // a failed fill repeats the value in its message: those of secret-looking fields are scrubbed from errors
+  const secrets: string[] = Object.entries(values).filter(([label]) => looksSecret(label)).map(([, value]) => String(value));
   await step(`Fill form (${Object.keys(values).join(', ')})`, async () => {
     for (const [label, value] of Object.entries(values)) {
       const exact = scope.getByLabel(label, { exact: true });
@@ -150,7 +159,11 @@ export async function fillForm(scope: Page | Locator, values: Record<string, For
       const type = await control.evaluate((element) => (element as HTMLInputElement).type ?? '');
       if (tag === 'select') await control.selectOption(Array.isArray(value) ? value.map((v) => ({ label: v })) : { label: String(value) });
       else if (type === 'checkbox' || type === 'radio') await control.setChecked(Boolean(value));
+      else if (looksSecret(label) || (await isSecretTarget(control))) {
+        secrets.push(String(value));
+        await enterSecret(control, String(value), 'fill');
+      }
       else await control.fill(String(value));
     }
-  });
+  }, { redact: secrets });
 }

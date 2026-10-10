@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, Request, Response, Route } from '@playwright/test';
 import { expect } from '@playwright/test';
+import * as fs from 'node:fs';
 import { logger } from '@automation/referenced-automation-utils';
 import { step } from '../base/step';
 
@@ -97,13 +98,73 @@ export async function blockResources(page: Page | BrowserContext, options: { typ
   });
 }
 
-/** Replays (or records) traffic from a HAR file: `routeFromHar(page, 'har/orders.har', { url: '**\/api/**' })`. With `update: true` the real traffic is recorded into it instead. */
+/**
+ * Replays (or records) traffic from a HAR file: `routeFromHar(page, 'har/orders.har', { url: '**\/api/**' })`.
+ * With `update: true` the real traffic is recorded into it instead - and a HAR holds real request and response
+ * headers, so a warning is logged. By default the recording is `minimal` (no cookies, timings or sizes); the headers
+ * that carry credentials (Authorization, Cookie, Set-Cookie, API-key headers) are still in it until you run
+ * `sanitizeHar(file)` on the finished file, before it is committed or published.
+ */
 export async function routeFromHar(
   page: Page | BrowserContext,
   harFile: string,
-  options: { url?: string | RegExp; update?: boolean; notFound?: 'abort' | 'fallback' } = {},
+  options: { url?: string | RegExp; update?: boolean; notFound?: 'abort' | 'fallback'; updateMode?: 'minimal' | 'full' } = {},
 ): Promise<void> {
-  await step(`${options.update ? 'Record' : 'Replay'} HAR ${harFile}`, () => page.routeFromHAR(harFile, { url: options.url, update: options.update, notFound: options.notFound ?? 'abort' }));
+  if (options.update) {
+    logger.warn(`Recording real traffic into ${harFile}: the HAR keeps request/response headers (Authorization, Cookies, ...). Run network.sanitizeHar('${harFile}') once the context has closed, before committing it.`);
+  }
+  await step(`${options.update ? 'Record' : 'Replay'} HAR ${harFile}`, () =>
+    page.routeFromHAR(harFile, { url: options.url, update: options.update, updateMode: options.update ? options.updateMode ?? 'minimal' : undefined, notFound: options.notFound ?? 'abort' }),
+  );
+}
+
+const CREDENTIAL_HEADER = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token|x-xsrf-token)$|token|secret|api[-_]?key/i;
+const MASKED = '[REDACTED]';
+
+/**
+ * Masks the credentials in a recorded HAR file in place: the values of Authorization / Cookie / Set-Cookie / API-key /
+ * token headers, the `cookies` arrays and the password-like fields of JSON request bodies. Replaying still works for
+ * routes that do not depend on those values. Returns how many values were masked.
+ */
+export function sanitizeHar(harFile: string): number {
+  const har = JSON.parse(fs.readFileSync(harFile, 'utf8')) as { log?: { entries?: Array<Record<string, any>> } };
+  let masked = 0;
+  const maskHeaders = (headers: Array<{ name: string; value: string }> | undefined) => {
+    for (const header of headers ?? []) {
+      if (CREDENTIAL_HEADER.test(header.name) && header.value !== MASKED) {
+        header.value = MASKED;
+        masked++;
+      }
+    }
+  };
+  for (const entry of har.log?.entries ?? []) {
+    maskHeaders(entry.request?.headers);
+    maskHeaders(entry.response?.headers);
+    for (const message of [entry.request, entry.response]) {
+      if (message?.cookies?.length) {
+        masked += message.cookies.length;
+        message.cookies = [];
+      }
+    }
+    const body = entry.request?.postData;
+    if (body?.text && /json/i.test(body.mimeType ?? '')) {
+      try {
+        const json = JSON.parse(body.text);
+        const mask = (value: unknown): unknown => {
+          if (Array.isArray(value)) return value.map(mask);
+          if (value && typeof value === 'object') {
+            return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, /pass(word|wd)?|secret|token|api[-_]?key/i.test(key) && typeof inner === 'string' ? (masked++, MASKED) : mask(inner)]));
+          }
+          return value;
+        };
+        body.text = JSON.stringify(mask(json));
+      } catch {
+        // not JSON after all: leave the body as recorded
+      }
+    }
+  }
+  fs.writeFileSync(harFile, JSON.stringify(har, null, 2));
+  return masked;
 }
 
 /**
@@ -159,9 +220,12 @@ export interface NetworkLog {
   readonly errorResponses: ReadonlyArray<{ url: string; method: string; status: number }>;
   /** Requests still waiting for an answer. */
   inFlight(): number;
-  /** Requests whose URL matches. */
+  /**
+   * Requests whose URL matches: a string is the EXACT url unless it contains `*` (a glob: `**` any characters, `*`
+   * anything but `/`); a RegExp is tested against the url; a function gets the parsed URL.
+   */
   find(match: UrlMatch): Request[];
-  /** Throws if any request failed or got a 4xx/5xx, naming each; `ignore` skips URLs (e.g. a known-broken analytics call). */
+  /** Throws if any request failed or got a 4xx/5xx, naming each; `ignore` skips URLs (exact url, glob with `*`, or RegExp - e.g. `/analytics/` for a known-broken call). */
   expectNoErrors(options?: { ignore?: Array<string | RegExp>; allowStatuses?: number[] }): void;
   /** Resolves when no request has been in flight for `quietMs` - a signal built from the page's own traffic, unlike `networkidle`. */
   waitUntilQuiet(options?: { quietMs?: number; timeoutMs?: number }): Promise<void>;
@@ -177,7 +241,7 @@ function globToRegExp(glob: string): RegExp {
 const matches = (url: string, match: UrlMatch): boolean => {
   if (typeof match === 'function') return match(new URL(url));
   if (match instanceof RegExp) return match.test(url);
-  return match.includes('*') ? globToRegExp(match).test(url) : url.includes(match);
+  return match.includes('*') ? globToRegExp(match).test(url) : url === match;
 };
 
 /**

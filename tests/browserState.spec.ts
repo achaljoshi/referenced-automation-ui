@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test, expect } from '../src/fixtures/uiFixtures';
+import { runPlaywright, type NestedResult } from './support/runPlaywright';
 import * as actions from '../src/actions';
 import * as assertions from '../src/assertions';
 import * as storage from '../src/storage/storage';
@@ -159,5 +160,45 @@ test.describe('clock', () => {
     await assertions.toHaveText(page.locator('#now'), '2024-02-02T09:00:00.000Z');
     await clock.resumeClock(page);
     await expect(page.locator('#ticks')).not.toHaveText('3');
+  });
+});
+
+// U9: a pageAs context was a bare browser.newContext() - recording nothing, so the second user's half of a failed test
+// left no video. It now follows the project's `use.video` (trace is already shared by Playwright) and baseURL.
+const PAGE_AS_SPEC = `
+const fs = require('fs'), os = require('os'), path = require('path');
+const { test, expect } = require(__FRAMEWORK__);
+const state = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pageas-')), 'state.json');
+fs.writeFileSync(state, JSON.stringify({ cookies: [], origins: [] }));
+
+test('second user: baseURL applies', async ({ pageAs }) => {
+  const second = await pageAs(state);
+  await second.context().route('**/*', (route) => route.fulfill({ body: 'second user page' }));
+  await second.goto('/dashboard');
+  expect(second.url()).toBe('https://app.test/dashboard');
+});
+
+test('second user: a failing test keeps their video', async ({ pageAs }) => {
+  const second = await pageAs(state);
+  await second.context().route('**/*', (route) => route.fulfill({ body: 'x' }));
+  await second.goto('/x');
+  expect(1, 'forced failure').toBe(2);
+});
+`;
+
+test.describe('pageAs follows the project use options', () => {
+  test('the second user\'s video is attached per use.video; baseURL applies', () => {
+    const on = Object.fromEntries(runPlaywright({ 'pageas.spec.js': PAGE_AS_SPEC }, "use: { baseURL: 'https://app.test', video: 'on' },").map((r) => [r.title, r])) as Record<string, NestedResult>;
+    expect(on['second user: baseURL applies']?.status).toBe('passed');
+    expect(on['second user: baseURL applies']?.attachments).toEqual(expect.arrayContaining(['pageAs-1-video']));
+    expect(on['second user: a failing test keeps their video']?.attachments).toEqual(expect.arrayContaining(['pageAs-1-video']));
+  });
+
+  test('retain-on-failure keeps them only for the failing test; off records nothing', () => {
+    const retain = Object.fromEntries(runPlaywright({ 'pageas.spec.js': PAGE_AS_SPEC }, "use: { baseURL: 'https://app.test', video: 'retain-on-failure' },").map((r) => [r.title, r])) as Record<string, NestedResult>;
+    expect(retain['second user: baseURL applies']?.attachments.filter((name) => name.startsWith('pageAs'))).toEqual([]);
+    expect(retain['second user: a failing test keeps their video']?.attachments).toEqual(expect.arrayContaining(['pageAs-1-video']));
+    const off = Object.fromEntries(runPlaywright({ 'pageas.spec.js': PAGE_AS_SPEC }, "use: { baseURL: 'https://app.test', video: 'off' },").map((r) => [r.title, r])) as Record<string, NestedResult>;
+    expect(off['second user: a failing test keeps their video']?.attachments.filter((name) => name.startsWith('pageAs'))).toEqual([]);
   });
 });

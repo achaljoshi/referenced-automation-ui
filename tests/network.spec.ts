@@ -180,11 +180,66 @@ test.describe('trackNetwork', () => {
     expect(log.find(items)).toHaveLength(1);
     expect(log.find(/pic\.png/)).toHaveLength(1);
     expect(log.find((url) => url.pathname === '/')).toHaveLength(1);
-    expect(log.find('pic.png')).toHaveLength(1);
+    expect(log.find(`${app.url}/pic.png`)).toHaveLength(1);
+    expect(log.find('**/pic.png')).toHaveLength(1);
     expect(log.failures.map((f) => new URL(f.url).pathname)).toEqual(['/pic.png']);
     expect(log.errorResponses.map((r) => [new URL(r.url).pathname, r.status])).toEqual([['/api/items', 500]]);
     expect(() => log.expectNoErrors()).toThrow(/2 network problem\(s\):[\s\S]*pic\.png failed[\s\S]*-> 500/);
     expect(() => log.expectNoErrors({ ignore: [/pic\.png/], allowStatuses: [500] })).not.toThrow();
     log.stop();
+  });
+});
+
+test.describe('trackNetwork.find string matching', () => {
+  test('a string is the exact URL unless it has a *: a fragment no longer matches (it used to match any URL containing it)', async ({ page }) => {
+    const log = network.trackNetwork(page);
+    await actions.goto(page, app.url);
+    await expect.poll(() => log.requests.length).toBeGreaterThan(0);
+    expect(log.find('pic.png')).toHaveLength(0);
+    expect(log.find(app.url)).toHaveLength(0); // the page itself is `${app.url}/`
+    expect(log.find(`${app.url}/`)).toHaveLength(1);
+    expect(log.find(`${app.url}/pic.*`)).toHaveLength(1);
+    expect(log.find(/pic/)).toHaveLength(1);
+    log.stop();
+  });
+});
+
+test.describe('routeFromHar update', () => {
+  test('recording warns about the credentials a HAR keeps, and sanitizeHar masks them', async ({ page }) => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'har-')), 'rec.har');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        log: {
+          entries: [
+            {
+              request: {
+                url: 'https://api.test/login',
+                headers: [{ name: 'Authorization', value: 'Bearer abc.def.ghi' }, { name: 'Accept', value: 'application/json' }, { name: 'X-Api-Key', value: 'k-123' }],
+                cookies: [{ name: 'sid', value: 'cookie-secret' }],
+                postData: { mimeType: 'application/json', text: JSON.stringify({ user: 'ada', password: 'hunter2', nested: { token: 't-1' } }) },
+              },
+              response: { headers: [{ name: 'Set-Cookie', value: 'sid=cookie-secret' }, { name: 'Content-Type', value: 'text/plain' }], cookies: [{ name: 'sid', value: 'cookie-secret' }] },
+            },
+          ],
+        },
+      }),
+    );
+    const masked = network.sanitizeHar(file);
+    expect(masked).toBeGreaterThanOrEqual(7);
+    const text = fs.readFileSync(file, 'utf8');
+    for (const secret of ['abc.def.ghi', 'k-123', 'cookie-secret', 'hunter2', 't-1']) expect(text).not.toContain(secret);
+    expect(text).toContain('application/json'); // harmless headers and non-secret fields stay
+    expect(JSON.parse(JSON.parse(text).log.entries[0].request.postData.text).user).toBe('ada');
+    // recording into a HAR is announced: it keeps real headers
+    const lines: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => (lines.push(String(chunk)), true)) as typeof process.stdout.write;
+    try {
+      await network.routeFromHar(page, path.join(path.dirname(file), 'new.har'), { update: true });
+    } finally {
+      process.stdout.write = original;
+    }
+    expect(lines.join('')).toMatch(/warn.*Recording real traffic into .*new\.har.*sanitizeHar/);
   });
 });

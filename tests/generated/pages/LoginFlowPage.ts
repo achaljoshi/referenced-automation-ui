@@ -13,7 +13,7 @@ export const CONSTANTS = {
   urls: {
     home: '/',
   },
-  // what the recording typed, selected or uploaded - secrets are read from the environment
+  // what the recording typed, selected or uploaded - recognised secrets are read from the environment
   inputs: {
     usernameTextbox: 'ada',
     get passwordField() {

@@ -34,7 +34,9 @@ test.describe('visual comparison', () => {
 
   test('a changed page does NOT match: the failure is a failure', async ({ page }) => {
     await page.locator('#red').evaluate((el) => ((el as HTMLElement).style.background = '#33c'));
-    await expect(assertions.toHaveScreenshot(page.locator('#red'), 'red-swatch.png', { timeout: 2000 })).rejects.toThrow(/Screenshot comparison failed|pixels .* are different/s);
+    // Its OWN baseline (a copy of the red swatch): with `-u` Playwright rewrites the baseline a failing comparison used
+    // to be compared with, and that must never be the one the passing test above depends on.
+    await expect(assertions.toHaveScreenshot(page.locator('#red'), 'red-swatch-expected-mismatch.png', { timeout: 2000 })).rejects.toThrow(/Screenshot comparison failed|pixels .* are different/s);
   });
 
   test('toMatchAriaSnapshot checks structure and ignores what the template leaves out', async ({ page }) => {
@@ -107,5 +109,21 @@ test.describe('performance', () => {
     const ok = await performance.expectWithinBudget(page, { loadMs: 30_000, cls: 1, ttfbMs: 30_000 });
     expect(ok.timing.load).toBeGreaterThan(0);
     await expect(performance.expectWithinBudget(page, { loadMs: 0, domContentLoadedMs: 0, transferBytes: 1 })).rejects.toThrow(/Over the performance budget: DOMContentLoaded .*; load .*; transfer size/);
+  });
+
+  test('a budget on a metric the browser did not report FAILS instead of passing unchecked', async ({ page }) => {
+    // Firefox and WebKit have no LCP, and the headless Chromium shell reports none: make this browser behave like them.
+    await page.addInitScript(() => {
+      const observe = PerformanceObserver.prototype.observe;
+      PerformanceObserver.prototype.observe = function (init?: PerformanceObserverInit) {
+        if (init?.type === 'largest-contentful-paint') throw new TypeError('unsupported entry type');
+        return observe.call(this, init);
+      };
+    });
+    await page.goto(app.url);
+    expect((await performance.webVitals(page)).lcp).toBeUndefined();
+    await expect(performance.expectWithinBudget(page, { lcpMs: 2_500 })).rejects.toThrow(/did not report LCP.*cannot be checked/);
+    // unbudgeted metrics that are missing are fine
+    await expect(performance.expectWithinBudget(page, { cls: 1 })).resolves.toBeDefined();
   });
 });

@@ -111,8 +111,8 @@ All of the below are standalone functions imported as `import { actions } from '
 | Capability | Functions |
 |---|---|
 | Navigation | `goto`, `reload`, `goBack`, `goForward`, `currentUrl`, `title` |
-| Actions | `click`, `dblClick`, `rightClick`, `fill`, `type` (real keystrokes), `clear`, `check`, `uncheck`, `selectOption`, `hover`, `dragAndDrop`, `pressKey`, `focus`, `uploadFile` |
-| Reads | `getText`, `getValue`, `getAttribute` (these wait for the element), and `isVisible`, `isEnabled`, `isChecked`, `count`, `allText` - the state reads **also wait** (up to the expect timeout) for the state to be reached, so `await actions.isVisible(x)` is right even right after a click; pass `{ timeout: 0 }` to read the state instantly, e.g. to assert something is **not** shown |
+| Actions | `click`, `dblClick`, `rightClick`, `fill`, `type` (real keystrokes; secrets: see [Secrets are masked](#secrets-are-masked-in-reports-and-logs)), `clear`, `check`, `uncheck`, `selectOption`, `hover`, `dragAndDrop`, `pressKey`, `focus`, `uploadFile` |
+| Reads | `getText`, `getValue`, `getAttribute` (these wait for the element), and `isVisible`, `isEnabled`, `isChecked`, `count`, `allText` - the state reads **also wait** (up to the expect timeout) for the state to be reached, so `await actions.isVisible(x)` is right even right after a click. Only the timeout is swallowed (`false` / `0` / `[]`): a strict-mode violation, a closed page or an invalid selector **throws**. To assert something is **absent**, do not read the state: use the web-first form, which retries until it is gone and fails with the page's state - `await assertions.not.toBeVisible(banner)` / `assertions.toBeHidden(banner)` / `assertions.toHaveCount(rows, 0)`. `{ timeout: 0 }` is a 1 ms snapshot: fine for "has it already happened?", wrong for "it is not there", because it passes before the page has rendered the thing |
 | Explicit waits | `waitForVisible`, `waitForHidden`, `waitForUrlContains`, `waitForLoadState`, `waitForResponseMatching` (Playwright's Locator API auto-waits on every action above already - these cover the conditions that don't) |
 | Screenshots | `screenshotPage`, `screenshotElement` (automatic on-failure screenshots are configured in `playwright.config.ts`, not something you call yourself) |
 | Frames | `frame(page, selector)` returns a `FrameLocator` scoped inside an iframe |
@@ -130,14 +130,14 @@ All of the below are standalone functions imported as `import { actions } from '
 |---|---|
 | `locators` | beyond role/label/text: `byCss`, `byXpath`, `filterBy`, `either`, `both`, `within`, `frameChain`, tables (`rowWithText`, `cellInRow`, `readTable`) |
 | `actions` | the input guide: `setChecked`, `clickWithModifiers`, `canClick` (dry run), `chooseFiles`, `uploadFromMemory`, `pressOnPage`, `dragBy`, `scrollPageTo`, `fillForm`, `downloadAndRead` |
-| `dialogs` | `handleDialogDuring(page, action, 'accept' \| 'dismiss' \| { accept: 'text' })`, `recordDialogs` |
-| `network` | `mockJson`, `mockStatus`, `modifyJsonResponse`, `modifyRequest`, `blockResources`, `routeFromHar`, `mockWebSocket`, `setOffline`, `throttleNetwork`, `captureApiCall`, `trackNetwork` |
+| `dialogs` | `handleDialogDuring(page, action, 'accept' \| 'dismiss' \| { accept: 'text' })` (removes only its own listener, so it coexists with `recordDialogs`), `recordDialogs` |
+| `network` | `mockJson`, `mockStatus`, `modifyJsonResponse`, `modifyRequest`, `blockResources`, `routeFromHar`, `mockWebSocket`, `setOffline`, `throttleNetwork`, `captureApiCall`, `trackNetwork` (`find('url')` is an **exact** URL; use `*` for a glob or a RegExp to match a part), `sanitizeHar` (masks credentials in a recorded HAR) |
 | `storage` | cookies, local/sessionStorage, `saveStorageState`, `pageAs` (a second signed-in user) |
 | `emulation`, `clock` | viewport, dark mode / reduced motion / print, geolocation, permissions, `newPageWith({ locale, timezoneId, device })`; fix or fast-forward time |
 | `tabs`, `evaluate` | several tabs; `evaluate`, `waitForPageFunction`, `addInitScript`, browser-API mocks (`mockClipboard`, `stubWindowOpen`) |
-| `visual`, `performance` | `ariaSnapshot`, `capture`, `savePdf`; `navigationTiming`, `webVitals`, `expectWithinBudget` |
+| `visual`, `performance` | `ariaSnapshot`, `capture`, `savePdf`; `navigationTiming`, `webVitals`, `expectWithinBudget` (fails when a budgeted metric - LCP in a browser that reports none - was not reported, instead of skipping it) |
 | `assertions` | plus `toHaveScreenshot`, `toMatchAriaSnapshot`, `softly(...)`, `eventually(...)`, `pollValue(...)` |
-| fixtures | `vars` (`{{uuid}}`, `{{random:email}}`, `{{date:+7d}}`), `pageGuard` (console errors, page errors, failed requests), `pageAs`; `guardedTest` watches every test |
+| fixtures | `vars` (`{{uuid}}`, `{{random:email}}`, `{{date:+7d}}`), `pageGuard` (console errors, page errors, failed requests; it only **attaches** what it saw to the report unless you set `test.use({ failOnPageProblems: true })` - the default is to not fail the test), `pageAs` (a second context with the project's `use` options, `baseURL` and video; trace is shared by Playwright); `guardedTest` watches every test |
 
 ```ts
 await network.mockJson(page, '**/api/orders', { items: [] }, { delayMs: 300 });      // see the loading state, then the empty state
@@ -148,6 +148,19 @@ await assertions.softly(async () => {                                           
 });
 const { page: admin } = await storage.pageAs(browser, 'admin.json');                    // two users in one scenario
 ```
+
+### Secrets are masked in reports and logs
+
+A typed password must not appear in the HTML report, Allure, JUnit or the log. `actions.fill`, `actions.type`, `actions.typeOnPage` and `actions.fillForm` show `***` instead of the value - in the step title, the log line and any error message - when the field is `<input type=password>`, has an `autocomplete` of `current-password` / `new-password` / `one-time-code`, or its name, label, placeholder, id or test id looks like password / passwd / passcode / pin / otp / secret / token / api key, or when you say so:
+
+```ts
+await actions.fill(locators.byLabel(page, 'Card security answer'), answer, { secret: true });   // masked whatever the field is called
+await actions.fill(locators.byLabel(page, 'Pin code'), '12', { secret: false });                 // do not guess from the name (a password input stays masked)
+```
+
+In Gherkin, a value written as `{{env:NAME}}` is secret: `When I fill in "Nickname" with "{{env:UI_PASSWORD}}"` is masked even in a plain field. If the field cannot be inspected (not there within a second, several matches) it is treated as secret.
+
+Two caveats worth knowing. A secret is entered through the page (`locator.evaluate`) rather than `locator.fill`, because Playwright's own step - `Fill "<value>"` - would print it in every reporter; the same visible/enabled/editable checks apply, and `actions.type` sends synthetic key events (`isTrusted` is false) for a secret. And **Playwright's trace records call parameters**, so a `trace.zip` of a login flow should be treated as sensitive (or turn tracing off for it).
 
 ## Gherkin / BDD (`playwright-bdd` 9.2.1)
 
@@ -194,7 +207,7 @@ const CONSTANTS = {                          // what the recording visited, type
   urls: { home: '/' },
   inputs: {
     usernameTextbox: 'ada',
-    get passwordField() { return env.get('UI_PASSWORD'); },   // secrets are read from the environment, never written down
+    get passwordField() { return env.get('UI_PASSWORD'); },   // recognised secrets are read from the environment, not written down
   },
   expected: { dashboardHeadingText: 'Dashboard' },
 } as const;
@@ -216,7 +229,8 @@ test('login @ui', async ({ page }) => {
 Change `inputs.usernameTextbox` and every step that types it follows; the page moved a button - fix `LOCATORS.logInButton` once. A popup uses the same entries on its own page (`LOCATORS.logInButton(page1)`). With `--page-objects` the same two objects are exported from the top of `pages/<Name>Page.ts` and the test imports them; with `--data` the typed values come from the CSV instead; `--inline` writes everything in the steps (a quick one-off).
 
 - Understands the `playwright-test` output and the `library` one (`(async () => { const browser = await chromium.launch(); ... })()`), parsed with the TypeScript compiler API, so quoting, template strings and nesting are not a problem.
-- **Typed secrets are never written**: a value typed into a field named like a password, token, secret, PIN or API key becomes `env.get('UI_...')`; `--param 'account=ACCOUNT'` marks more. The command prints which variables to set.
+- **Secrets the converter recognises are read from the environment, not written** - which is not the same as "no secret can reach the file". Replaced by `env.get('UI_...')`: a value typed into a field named like a password, token, secret, PIN or API key (by `fill`, `pressSequentially`, `keyboard.type` and key-by-key presses after such a field was focused; the value such a field is expected to have); cookie values in `addCookies`; credential-named properties and headers (`Authorization`, `x-api-key`, `password`, `token` ... in `setExtraHTTPHeaders`, `newContext` / `test.use` options, route handlers, storage writes); `token=` / `access_token=` / `api_key=` / `password=` / `sig=` query parameters in URLs and expected URLs (credentials in a URL's user-info part are dropped); `Bearer` / `Basic` values, JWTs and `document.cookie = '...'` in evaluated code. Credentials inside a function that runs in the browser are handed in as the argument of `page.evaluate`, or masked as `'***'` when that is not possible. `--param 'account=ACCOUNT'` marks more fields. The command prints which variables to set and warns about each replacement. A secret the rules do not recognise (a password in a free-text field, a key in a custom header name) is written as recorded: **read the generated file before committing it**.
+- **`test.skip` / `test.fixme` / `test.fail` / `test.only` are kept** - on the test itself or inherited from `test.describe.skip|fixme|only` - so a skipped recording never comes back live. A conditional `test.skip(condition, reason)` is kept at the top of the file (it then applies to every converted test; a warning says so). A kept `test.only` is warned about: `forbidOnly` fails CI runs while it is there.
 - The popup / download / dialog / file-chooser / response patterns Playwright records as three statements become one framework call (`actions.waitForNewTab`, `actions.downloadAndRead`, `dialogs.handleDialogDuring`, `actions.chooseFiles`, ...). A popup or download the recording never uses is not bound to an unused variable.
 - Fixed waits, `networkidle` and `page.pause()` are removed - and listed. Anything with no framework wrapper stays as plain, marked Playwright (`// TODO(converter)`), and `--strict` turns that into a failure so it cannot be forgotten.
 - Paths are relative to `BASE_URL` (`--keep-host` keeps full URLs). `--test-import` / `--ui-import` point the generated file at your own base test and package.
@@ -358,9 +372,12 @@ Or split the two steps (e.g. to generate in CI and open locally): `npm run allur
 
 ## CI/CD (GitLab)
 
-`.gitlab-ci.yml` runs on every push to `main` (including a merge request being merged), every merge request, and manual "Run pipeline" from the GitLab UI. It uses Microsoft's official Playwright Docker image (`mcr.microsoft.com/playwright:v1.62.1-noble`, pinned to match this repo's locked Playwright version) with every browser preinstalled, so no `playwright install` step is needed in CI at all.
+`.gitlab-ci.yml` runs on every push to `main` (including a merge request being merged), every merge request, and manual "Run pipeline" from the GitLab UI. It uses the Playwright Docker image mirrored into the organisation's Artifactory (`.../common/microsoft/playwright:v1.47.0-jammy`) - only as a Node.js + Ubuntu Jammy base with the OS libraries browsers need, because `mcr.microsoft.com` is not reachable from the restricted network. That image's browsers do not match this repo's Playwright (1.64), so **every job runs `npx playwright install <browser>` itself** after `npm ci` (binaries only, no `--with-deps`); if that download is blocked, set `PLAYWRIGHT_DOWNLOAD_HOST` to an Artifactory mirror (the header of `.gitlab-ci.yml` explains both variables).
 
-Stages: `build` (install, compile, lint) → `test` (a `chromium`/`firefox`/`webkit` matrix, plus a separate accessibility job) → `report` (publishes the Allure HTML report to GitLab Pages on `main`).
+Stages: `build` (install, compile, lint, typecheck) → `test` (a `chromium`/`firefox`/`webkit` matrix, plus one separate accessibility job) → `report` (publishes the Allure HTML report to GitLab Pages on `main`).
+
+- The matrix legs run `npx playwright test --project=<browser>` (after `bddgen`) and the Gherkin features run **once**, in their own `bdd` job: the `bdd` project that `createPlaywrightConfig` appends takes no browser from the matrix, so running it in every leg would use a browser that leg did not install.
+- `tests/accessibility.spec.ts` runs once, in the `accessibility` job (Chromium); the matrix legs skip it with `--grep-invert @a11y`.
 
 **Packages in CI.** `npm ci` installs `referenced-automation-utils` and `referenced-automation-api` by the versions in `package.json`, from the npm registry in the `NPM_REGISTRY_URL` CI/CD variable (Settings → CI/CD → Variables) - the pipeline neither clones nor builds the sibling repos. Publish a new version of them first (see [Publishing a package](#publishing-a-package-to-the-registry-jfrog-artifactory)), then change the version here (see [Upgrading a package](#upgrading-a-package-change-one-version)).
 
@@ -455,4 +472,4 @@ Same as the other repos in this family: VS Code prompts for recommended extensio
 
 `tests/support/` is also the working example of [the page object/component/fixture pattern above](#structuring-page-objects-components-and-fixtures): `LoginPage.ts` and `DashboardPage.ts` are real page object factory functions (one page each, `loginAs()` returns the next page), `components/FileUploadWidget.ts` is a real component factory function, and `fixtures.ts` wires both pages up as Playwright fixtures - `demo.spec.ts` and `accessibility.spec.ts` consume them exactly the way a consuming project's own specs would. `accessibility.spec.ts` runs axe-core against the same fixture - properly labelled form controls and a titled iframe, on purpose, so the "no violations" assertions are actually meaningful rather than trivially true. `locatorsAndAssertions.spec.ts` is the working reference for `locators`/`assertions` themselves.
 
-Two more spec files demo everything a consuming project can import from this framework's own dependencies, verified for real rather than described: `utilsMethods.spec.ts` exercises every reusable method `@automation/referenced-automation-utils` exports (crypto, dates, random data, JSON/YAML/CSV/Excel, object-path traversal, schema validation, `SqliteClient`, `SmtpClient`, `SftpClient`, ...), and `apiIntegration.spec.ts` demos `MockServer` and `mockApiRoute` from `@automation/referenced-automation-api` - the latter is a devDependency only (see `scripts/setup.sh`), not part of what this package ships.
+Two more spec files cover what a consuming project imports from this framework's dependencies: `utilsMethods.spec.ts` is only a thin import check that the utils pieces this package builds on resolve and work (utils tests its own methods in its own repo, and the check is not tagged `@smoke`), and `apiIntegration.spec.ts` demos `MockServer` and `mockApiRoute` from `@automation/referenced-automation-api` - the latter is a devDependency only (see `scripts/setup.sh`), not part of what this package ships.

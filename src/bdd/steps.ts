@@ -31,6 +31,9 @@ function byRole(page: Page, roleWord: string, name: string, vars: Vars): Locator
 
 const label = (page: Page, text: string, vars: Vars) => locators.byLabel(page, vars.interpolate(text));
 
+/** A typed value that came from `{{env:NAME}}` is a secret: it is masked in step titles and logs (other values are masked when the field looks secret - see `actions.fill`). */
+const fromEnvironment = (text: string): true | undefined => (/\{\{\s*env:/i.test(text) ? true : undefined);
+
 /**
  * Business-readable steps for features that drive a web UI. Library-agnostic: pass the Given/When/Then of your BDD tool
  * (playwright-bdd's `createBdd(test)` gives them). The test they run in needs the `vars` and `uiScenario` fixtures
@@ -125,11 +128,11 @@ export function registerUiSteps({ Given, When, Then }: BddSteps): void {
   });
 
   When('I fill in {string} with {string}', async ({ uiScenario, vars }: UiStepFixtures, field: string, value: string) => {
-    await actions.fill(label(uiScenario.page, field, vars), vars.interpolate(value));
+    await actions.fill(label(uiScenario.page, field, vars), vars.interpolate(value), { secret: fromEnvironment(value) });
   });
 
   When('I fill in the placeholder {string} with {string}', async ({ uiScenario, vars }: UiStepFixtures, placeholder: string, value: string) => {
-    await actions.fill(locators.byPlaceholder(uiScenario.page, vars.interpolate(placeholder)), vars.interpolate(value));
+    await actions.fill(locators.byPlaceholder(uiScenario.page, vars.interpolate(placeholder)), vars.interpolate(value), { secret: fromEnvironment(value) });
   });
 
   When('I clear {string}', async ({ uiScenario, vars }: UiStepFixtures, field: string) => {
@@ -194,11 +197,13 @@ export function registerUiSteps({ Given, When, Then }: BddSteps): void {
   // ---- Then: what the user sees ----
 
   Then('I should see {string}', async ({ uiScenario, vars }: UiStepFixtures, text: string) => {
-    await assertions.toBeVisible(locators.byText(uiScenario.page, vars.interpolate(text)).first());
+    // some match is visible - not only the first in the DOM, which may be a hidden copy
+    await assertions.toBeVisible(locators.byText(uiScenario.page, vars.interpolate(text)).filter({ visible: true }).first());
   });
 
   Then('I should not see {string}', async ({ uiScenario, vars }: UiStepFixtures, text: string) => {
-    await assertions.not.toBeVisible(locators.byText(uiScenario.page, vars.interpolate(text)).first());
+    // no match is visible: checking only `.first()` passed while a later match was on screen
+    await assertions.toHaveCount(locators.byText(uiScenario.page, vars.interpolate(text)).filter({ visible: true }), 0);
   });
 
   Then('I should see the {word} {string}', async ({ uiScenario, vars }: UiStepFixtures, role: string, name: string) => {
