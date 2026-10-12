@@ -35,7 +35,8 @@
     "audit": "automation-framework-audit --run",
     "audit:quick": "automation-framework-audit",
     "test:bdd": "bddgen && playwright test --project=bdd",
-    "convert:codegen": "node dist/cli/codegenToTests.js"
+    "convert:codegen": "node dist/cli/codegenToTests.js",
+    "codegen-to-tests": "node dist/cli/codegenToTests.js"
   },
   "dependencies": {
     "@automation/referenced-automation-utils": "^1.0.0",

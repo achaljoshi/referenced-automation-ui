@@ -5,10 +5,17 @@ import { convertCodegen, type ParamRule } from '../codegen';
 
 const USAGE = `ui-codegen-to-playwright - turn a Playwright recording into a test written the way this framework is used
 
-Record with Playwright's own tool, then convert:
+Record with Playwright's own tool, then convert. Inside this repo (after npm run build; note the -- before the arguments):
 
   npx playwright codegen https://app.example.com --output recordings/login.spec.ts
+  npm run codegen-to-tests -- recordings/login.spec.ts
+  node dist/cli/codegenToTests.js recordings/login.spec.ts          (the same, without npm)
+
+From a project that depends on this package, the command is linked into its node_modules/.bin, so there:
+
   npx ui-codegen-to-playwright recordings/login.spec.ts
+
+(Inside this repo that npx form fails: a package's own bin is not linked into its own node_modules/.bin.)
 
 Usage:
   ui-codegen-to-playwright <recording.ts | folder | -> [options]

@@ -10,7 +10,7 @@ REM   2. Keep it local: put the .tgz where the consuming repo can see it and ins
 REM      `npm install --no-save <file>.tgz` (README: Using a package without a registry) - or run
 REM      scripts\setup.bat --local in the consumer, which builds and installs every @automation dependency this way.
 REM
-REM Usage: scripts\create-package.bat [--local] [output-dir]
+REM Usage: scripts\create-package.bat [--local] [output-dir]      (PowerShell: .\scripts\create-package.bat ...)
 REM   --local     build against the sibling @automation packages in ..\shared-packages instead of the registry
 REM   output-dir  default ..\shared-packages (sibling to this repo)
 REM ============================================================================

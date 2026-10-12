@@ -7,13 +7,15 @@ Playwright Test itself already manages browser/context/page lifecycle, retries, 
 ## Quick start
 
 ```bash
-./scripts/setup.sh          # npm ci + playwright install --with-deps (scripts/setup.bat on Windows)
+./scripts/setup.sh          # npm ci + playwright install --with-deps
 npm test                     # full suite
 npm run test:smoke           # only @smoke-tagged tests
 npm run test:regression      # only @regression-tagged tests
 ```
 
-`setup.sh`/`setup.bat` run `npm ci`. They first run `npm config set registry "$NPM_REGISTRY_URL"` when that variable is set, so every package - the `@automation/*` ones too (`referenced-automation-utils`, `referenced-automation-api`), each **by the version in `package.json`** - is fetched from your organisation's npm registry. If those packages are not published there yet, or you want to try a change you have not published, run `./scripts/setup.sh --local` (`scripts\setup.bat --local` on Windows): it builds the sibling repos this one depends on - they must be checked out next to this one - into `../shared-packages` and installs those instead, without touching `package.json` or the lockfile. See [Publishing a package](#publishing-a-package-to-the-registry-jfrog-artifactory) and [Using a package without a registry](#using-a-package-without-a-registry-local-generation).
+On Windows use PowerShell and start with `.\scripts\setup.bat` instead of `./scripts/setup.sh` (`scripts\setup.bat` works only in `cmd.exe`); the `npm` lines are the same. [Windows first run](#windows-first-run) lists the commands and the errors people hit first. Every environment variable the framework reads is in [Configuration reference](#configuration-reference) and in the commented template `.env.example`.
+
+`setup.sh`/`setup.bat` run `npm ci`. They first run `npm config set registry "$NPM_REGISTRY_URL"` when that variable is set, so every package - the `@automation/*` ones too (`referenced-automation-utils`, `referenced-automation-api`), each **by the version in `package.json`** - is fetched from your organisation's npm registry. If those packages are not published there yet, or you want to try a change you have not published, run `./scripts/setup.sh --local` (PowerShell: `.\scripts\setup.bat --local`): it builds the sibling repos this one depends on - they must be checked out next to this one - into `../shared-packages` and installs those instead, without touching `package.json` or the lockfile. See [Publishing a package](#publishing-a-package-to-the-registry-jfrog-artifactory) and [Using a package without a registry](#using-a-package-without-a-registry-local-generation).
 
 ```ts
 import { actions, locators } from '@automation/referenced-automation-ui';
@@ -37,6 +39,46 @@ export function createLoginPage(page: Page) {
   };
 }
 ```
+
+## Windows first run
+
+Commands for PowerShell (Windows PowerShell 5.1 or PowerShell 7, also the VS Code terminal), run from the root of this repo. They are on separate lines on purpose: Windows PowerShell 5.1 has no `&&`.
+
+```powershell
+cd C:\path\to\referenced-automation-ui          # every command below runs from the repo root
+
+.\scripts\setup.bat                              # npm ci + the Playwright browsers
+# or, when the packages are not in your registry: with referenced-automation-utils and referenced-automation-api
+# checked out NEXT TO this repo (same parent folder), build and install them locally instead
+.\scripts\setup.bat --local
+
+npm run build                                    # tsc -> dist/ (setup does not build; `npm test` builds first anyway)
+npm test                                         # bddgen, then every test in every project
+```
+
+If the browsers were not installed (a failed or skipped setup): `npm run install:browsers`, or `npx playwright install`. Pick tests with forward slashes (a backslash path finds nothing):
+
+```powershell
+npx playwright test tests/demo.spec.ts                   # one file
+npx playwright test -g "logs in with valid credentials"  # one test, by (part of) its title
+npx playwright test --project=chromium                   # one project
+npx playwright test tests/demo.spec.ts --headed          # watch it
+$env:BROWSER = "msedge"; npx playwright test             # a browser that is already installed
+Remove-Item Env:BROWSER                                  # undo: a $env: value stays set for the whole terminal session
+```
+
+`npx playwright test` does not run `bddgen`: after changing a `.feature` file or a step, use `npm test` or `npx bddgen` first. Convert a recording with `npm run codegen-to-tests -- recordings/login.spec.ts` (see [Record, then convert](#record-then-convert-ui-codegen-to-playwright)). In `cmd.exe` write `set BROWSER=msedge` and run the command on the next line (or `set BROWSER=msedge && npx playwright test`).
+
+| Error | Cause | Fix |
+|---|---|---|
+| `'tsc' is not recognized as an internal or external command` (or any `'playwright'` / `'bddgen'` / `'eslint'` is not recognized), or there is no `node_modules` folder | The install did not run or failed, so no tool was installed | Run `.\scripts\setup.bat` again and read its FIRST error (the registry, `NPM_REGISTRY_URL`, an `@automation/*` version that is not published: then use `--local`) |
+| `Cannot find module '...dist...'` | `dist/` is not built | `npm run build`. If the missing `dist` belongs to a dependency (`@automation/referenced-automation-utils` or `-api`), build and pack it with `.\scripts\setup.bat --local` |
+| `Error: No tests found` | The path pattern matched nothing: backslashes, a different folder than the repo root, or a file that is not `*.spec.ts` under `tests/` (the Gherkin tests are in the `bdd` project, generated by `bddgen`) | Run from the repo root and write `npx playwright test tests/demo.spec.ts` with forward slashes, or select by title with `-g "title"` |
+| `Illegal characters in path` mentioning `*.tgz` | An old `clean` script tried to delete `*.tgz` through a shell that does not expand it | The script is now `rimraf --glob dist "*.tgz"`: pull the fix (check `scripts.clean` in `package.json`) |
+| `'ui-codegen-to-playwright' is not recognized as an internal or external command` | A package's own command is not linked into its own `node_modules/.bin`; only projects that depend on the package get it | Inside this repo: `npm run build`, then `npm run codegen-to-tests -- recordings/login.spec.ts` (or `node dist/cli/codegenToTests.js recordings/login.spec.ts`) |
+| `Executable doesn't exist at ... Please run the following command to download new browsers: npx playwright install` | The Playwright browsers are not installed | `npx playwright install` (or `npm run install:browsers`). On a locked-down machine where the download is blocked: `$env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"; .\scripts\setup.bat` and run with an installed browser: `$env:BROWSER = "msedge"` (or `chrome`) |
+| A change in a `.env` file seems ignored | The file name does not match: `ENV=qa` (the default) reads `.env.qa` and `.env.qa.local`, never `.env.local`; or the value is shadowed by a variable already set in the terminal (the real environment wins over every file) | Name the file after the environment, and look at `Get-ChildItem Env:` for a leftover value (`Remove-Item Env:NAME`) |
+| `LOG_LEVEL` (or `LOG_FILE`, `RANDOM_SEED`, `NO_COLOR`, `TZ`, ...) in a `.env` file has no effect | These are read straight from the real environment, never from a file | `$env:LOG_LEVEL = "debug"; npx playwright test` - the "Read from" line of each variable in [Configuration reference](#configuration-reference) says which are which |
 
 ## Structuring page objects, components, and fixtures
 
@@ -190,12 +232,18 @@ Elements are found the way a user finds them - `the button "Save"`, `the field "
 
 Playwright records; this makes the recording look like the rest of your suite.
 
+Inside this repo (build first: `npm run build`; the `--` hands what follows to the converter):
+
 ```bash
 npx playwright codegen https://app.example.com --output recordings/checkout.spec.ts
-npx ui-codegen-to-playwright recordings/checkout.spec.ts                 # -> tests/generated/checkout.spec.ts (CONSTANTS and LOCATORS at the top)
-npx ui-codegen-to-playwright recordings/checkout.spec.ts --page-objects  # CONSTANTS + LOCATORS + a page object, in pages/CheckoutPage.ts
-npx ui-codegen-to-playwright recordings/checkout.spec.ts --data          # typed values become CSV columns, one test per row
+npm run codegen-to-tests -- recordings/checkout.spec.ts                 # -> tests/generated/checkout.spec.ts (CONSTANTS and LOCATORS at the top)
+npm run codegen-to-tests -- recordings/checkout.spec.ts --page-objects  # CONSTANTS + LOCATORS + a page object, in pages/CheckoutPage.ts
+npm run codegen-to-tests -- recordings/checkout.spec.ts --data          # typed values become CSV columns, one test per row
 ```
+
+`node dist/cli/codegenToTests.js recordings/checkout.spec.ts` is the same command without npm (it also needs `npm run build` first); `npm run convert:codegen -- ...` is an older name for `codegen-to-tests`.
+
+**From a project that depends on this package** the command is linked as `ui-codegen-to-playwright` in that project's `node_modules/.bin`, so there you run `npx ui-codegen-to-playwright recordings/checkout.spec.ts` (same arguments). A package's own commands are *not* linked into its own `node_modules/.bin`, so `npx ui-codegen-to-playwright ...` inside this repo fails (on Windows: "'ui-codegen-to-playwright' is not recognized as an internal or external command") - use the two forms above.
 
 The converted test starts with two objects, and its steps only refer to them - so a changed input or a changed page is **one edit at the top**:
 
@@ -310,37 +358,33 @@ Every function accepts an `options.timeout` to override the assertion timeout fo
 
 Same `.env.<name>` + `ENV=<name>` pattern as the rest of this family (see `referenced-automation-utils`'s README for the full explanation) - with one addition here: `playwright.config.ts` resolves the env file relative to its own location (`__dirname`), not the process's working directory, so the correct `.env.<ENV>` loads identically whether you run tests from a terminal, an IDE's "Run test" button, or a CI job with a different working directory.
 
+Pick the environment and override any option for one run:
+
 ```bash
+# bash / zsh
 ENV=stage BROWSER=firefox HEADLESS=false npx playwright test
 ```
 
-Every option below is read from the active env file, or overridable inline the same way:
+```powershell
+# PowerShell - set, run, then undo (a $env: value stays set for the rest of the terminal session)
+$env:ENV = "stage"; $env:BROWSER = "firefox"; $env:HEADLESS = "false"; npx playwright test
+Remove-Item Env:ENV; Remove-Item Env:BROWSER; Remove-Item Env:HEADLESS
+```
 
-| Variable | Default | What it controls |
-|---|---|---|
-| `BASE_URL` | _(unset)_ | `use.baseURL` |
-| `HEADLESS` | `true` | headed vs. headless |
-| `BROWSER` | `chromium` | `chromium` \| `firefox` \| `webkit` \| a system channel (`msedge`, `chrome`, ...) \| `all` (the 3 bundled browsers) \| `all-devices` (see below) |
-| `DEVICE` | _(unset)_ | any [Playwright device name](https://playwright.dev/docs/emulation#devices) (e.g. `"iPhone 15"`, `"Pixel 7"`, `"iPad Pro 11"`) - overrides `BROWSER` when set |
-| `WORKERS` | Playwright's own default | parallel worker count, e.g. `4` or `50%` |
-| `RETRIES` | `1` in CI, `0` locally | per-test retry count |
-| `MAX_FAILURES` | unlimited | stop the run after N failures (fail-fast) |
-| `TEST_TIMEOUT_MS` | `30000` | per-test timeout |
-| `EXPECT_TIMEOUT_MS` | `10000` | `expect()` assertion timeout |
-| `ACTION_TIMEOUT_MS` | `15000` | per-action timeout (click, fill, ...) |
-| `NAVIGATION_TIMEOUT_MS` | `30000` | per-navigation timeout |
-| `GLOBAL_TIMEOUT_MS` | unlimited | whole-run timeout cap |
-| `SLOW_MO_MS` | `0` | delay between actions - set e.g. `250` to watch a headed run |
-| `LOCALE` / `TIMEZONE_ID` / `COLOR_SCHEME` | unset | browser context locale/timezone/`prefers-color-scheme` |
-| `IGNORE_HTTPS_ERRORS` | `false` | for self-signed certs in lower environments |
-| `VIEWPORT_WIDTH` / `VIEWPORT_HEIGHT` | `1280x800` | desktop project viewport (device projects use their own preset size) |
-| `TEST_ID_ATTRIBUTE` | `data-testid` | which DOM attribute `page.getByTestId()` matches |
+Every option (`BASE_URL`, `HEADLESS`, `BROWSER`, `DEVICE`, `WORKERS`, `RETRIES`, the `*_TIMEOUT_MS` family, `TEST_ID_ATTRIBUTE`, ...) is read from the active `.env.<ENV>` file or the real environment; the full list, with defaults and which are secret, is the [Configuration reference](#configuration-reference). The three committed files (`.env.dev`, `.env.qa`, `.env.stage`) are the starting point; `.env.example` explains every key and `.env.local.example` is the template for the secret file `.env.<ENV>.local`.
 
 ### Device emulation
 
 ```bash
 DEVICE="iPhone 15" npm test        # one specific device
 BROWSER=all-devices npm test       # iPhone 15 + Pixel 7 + iPad Pro 11 in parallel
+```
+
+```powershell
+$env:DEVICE = "iPhone 15"; npm test           # one specific device
+Remove-Item Env:DEVICE
+$env:BROWSER = "all-devices"; npm test        # iPhone 15 + Pixel 7 + iPad Pro 11 in parallel
+Remove-Item Env:BROWSER
 ```
 
 Any of Playwright's 200+ built-in device presets works via `DEVICE` - the three above are just the default set `all-devices` runs.
@@ -358,6 +402,106 @@ await expectNoAccessibilityViolations(page);
 ```
 
 Both are plain functions taking `page` directly - no page object needed to use them, and nothing stops a page object from calling them internally if that's useful for a given test. `include`/`exclude` scope a scan to part of the page (e.g. skip a third-party widget you don't own); `rules`/`disableRules` add or turn off specific axe rule IDs. See `tests/accessibility.spec.ts` for working examples, including one that deliberately triggers a real violation to prove the assertion actually catches something.
+
+## Configuration reference
+
+Every environment variable this repo reads, directly or through `createPlaywrightConfig` and the shared utils code. The file `.env.example` documents each one the same way (what it is for, **Read from**, accepted values, default, required, secret, an example); this table is its summary and a test (`tests/envDocs.spec.ts`) fails when the two or the code drift apart.
+
+- **Shared keys** - environment selection, `BASE_URL`, browser and run options, timeouts, logging, `RANDOM_SEED`, `CI`, `TEST_WORKER_INDEX`, `TZ`: the same keys with the same meaning in every repo of the family, read by `referenced-automation-utils`. Their full documentation is the [utils `.env.example`](https://github.com/achaljoshi/referenced-automation-utils/blob/master/.env.example) and the [Configuration reference in the utils README](https://github.com/achaljoshi/referenced-automation-utils#configuration-reference).
+- **Repo-specific keys** - the credentials (`UI_*`) and the install / CI keys (`NPM_REGISTRY_URL`, `USE_LOCAL_PACKAGES`, `PLAYWRIGHT_*`, `AUDIT_RUN_GATES`): only this repo.
+- utils also reads `REMOTE_*` (remote desktop host), `S3270_PATH` and `TN3270_TIMEOUT_MS` (mainframe); this repo uses none of them.
+
+Where a key is read decides where it can be set. Most are read from the `.env.<ENV>` files **or** the real environment. A few are "real environment only" - `ENV`, `ENVIRONMENT`, the `LOG_*` keys, `NO_COLOR`, `FORCE_COLOR`, `RANDOM_SEED`, `CI`, `TEST_WORKER_INDEX`, `TZ` and the install / CI keys - and a line for them in a `.env` file does nothing:
+
+```bash
+# bash / zsh
+LOG_LEVEL=debug npx playwright test
+```
+
+```powershell
+# PowerShell (undo with Remove-Item Env:LOG_LEVEL)
+$env:LOG_LEVEL = "debug"; npx playwright test
+```
+
+Files load in this order, later wins: `.env`, `.env.<ENV>`, `.env.<ENV>.local`, the real environment. The secret file is named after the environment (`ENV=qa` reads `.env.qa.local`, **not** `.env.local`); create it from the template with `cp .env.local.example .env.qa.local` (PowerShell: `Copy-Item .env.local.example .env.qa.local`). Secrets never go into a committed file.
+
+Gherkin `{{env:NAME}}` and the step `I read the environment variable "NAME" into "var"` read any name you choose (from the files or the real environment), so the credentials below are only the names this repo's own features and the converter use. The converter writes `env.get('UI_<FIELD NAME>')` for a value it recognises as a secret - `UI_` plus the field's name in upper snake case (`UI_PASSWORD`, `UI_API_TOKEN`, `UI_ENTER_PIN`); `.env.example` has the rule, and the command prints the names to set after each conversion.
+
+### Environment and target
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `ENV` | Which environment to run against = which `.env.<name>` files load; real environment only | `qa` | no | no |
+| `ENVIRONMENT` | Fallback name for `ENV` when another tool owns `ENV`; real environment only | unset (then `qa`) | no | no |
+| `BASE_URL` | Base URL of the application under test (`use.baseURL`, so `page.goto('/login')` works) | unset | no for the config; yes for tests that open a relative URL | no |
+
+### Browser and run selection
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `BROWSER` | `chromium` \| `firefox` \| `webkit` \| a system channel (`msedge`, `chrome`, ...) \| `all` \| `all-devices` | `chromium` | no | no |
+| `DEVICE` | One [Playwright device](https://playwright.dev/docs/emulation#devices) (`"iPhone 15"`, `"Pixel 7"`); wins over `BROWSER` | unset | no | no |
+| `HEADLESS` | Run the browser without a window | `true` | no | no |
+| `WORKERS` | Test files run at the same time (a number or `50%`) | unset (half of the cores) | no | no |
+| `RETRIES` | How often a failed test is run again | `0`; `1` when `CI` is set | no | no |
+| `MAX_FAILURES` | Stop the run after this many failures (0 = never) | `0` | no | no |
+| `SLOW_MO_MS` | Slow every browser action down by this many milliseconds | `0` | no | no |
+| `VIEWPORT_WIDTH` | Desktop window width in pixels (device projects use their preset) | `1280` | no | no |
+| `VIEWPORT_HEIGHT` | Desktop window height in pixels | `800` | no | no |
+| `LOCALE` | Browser language, e.g. `en-GB` | unset | no | no |
+| `TIMEZONE_ID` | Browser time zone, e.g. `Europe/London` | unset | no | no |
+| `COLOR_SCHEME` | `light` \| `dark` \| `no-preference` | unset | no | no |
+| `IGNORE_HTTPS_ERRORS` | Accept invalid or self-signed certificates (test environments only) | `false` | no | no |
+| `TEST_ID_ATTRIBUTE` | The attribute `getByTestId()` looks at | `data-testid` | no | no |
+
+### Timeouts (milliseconds)
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `TEST_TIMEOUT_MS` | One whole test | `30000` | no | no |
+| `EXPECT_TIMEOUT_MS` | A web-first assertion (`expect`) | `10000` | no | no |
+| `ACTION_TIMEOUT_MS` | One action (click, fill, ...) | `15000` | no | no |
+| `NAVIGATION_TIMEOUT_MS` | A navigation (`goto`, link clicks) | `30000` | no | no |
+| `GLOBAL_TIMEOUT_MS` | The whole run (0 = no limit) | `0` | no | no |
+
+### Logging and test data (real environment only)
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `LOG_LEVEL` | Minimum level: `error` \| `warn` \| `info` \| `http` \| `verbose` \| `debug` \| `silly` | `info` | no | no |
+| `LOG_TO_FILE` | Also write the JSON-lines log file (`false` turns it off) | `true` | no | no |
+| `LOG_FILE` | Where the log file goes | `logs/automation.log` | no | no |
+| `LOG_FILE_PER_WORKER` | One log file per Playwright worker | `false` | no | no |
+| `NO_COLOR` | Any non-empty value switches coloured console output off | unset | no | no |
+| `FORCE_COLOR` | Any non-empty value switches colour on, even in CI or a pipe | unset | no | no |
+| `RANDOM_SEED` | Seeds the random-data generators so a run can be replayed | unset (random) | no | no |
+
+### Credentials (repo-specific)
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `UI_PASSWORD` | The password the login features (`{{env:UI_PASSWORD}}`) and the generated tests type; also what the converter derives for a field labelled "Password" | unset (this repo's own suite sets a made-up value for its local fixture page) | yes for a login scenario against a real application | YES |
+| `UI_BEARER_TOKEN` | A `Bearer ...` value found in a converted recording | unset | only if a converted recording used it | YES |
+| `UI_BASIC_CREDENTIAL` | A `Basic ...` value found in a converted recording | unset | only if a converted recording used it | YES |
+| `UI_JWT` | A JWT found in a converted recording | unset | only if a converted recording used it | YES |
+
+### Set by the machine
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `CI` | Set by CI systems: raises the retries default, forbids `test.only`, keeps all output, switches colour off | unset | no | no |
+| `TEST_WORKER_INDEX` | Set by Playwright for each worker; shown as `[w2]` in the log | unset outside a worker | no | no |
+| `TZ` | Time zone of the Node process (Node reads it, real environment only) | the machine's own | no | no |
+
+### Install and CI (repo-specific, real environment only)
+
+| Name | Purpose | Default | Required | Secret |
+|---|---|---|---|---|
+| `NPM_REGISTRY_URL` | The npm registry `setup`, `create-package` and every CI job install from; `publish-package` publishes to it | unset (npm keeps its own registry) | no for setup; yes for `publish-package` and in CI | no |
+| `USE_LOCAL_PACKAGES` | `1` installs the `@automation/*` packages from `../shared-packages` (same as `setup --local`) | unset | no | no |
+| `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` | `1` skips the browser download (then set `BROWSER` to an installed browser) | unset | no | no |
+| `PLAYWRIGHT_DOWNLOAD_HOST` | Mirror to download Playwright's browsers from when the public site is blocked (a GitLab CI/CD variable) | unset | no | no |
+| `AUDIT_RUN_GATES` | GitLab CI: on a manual pipeline, makes the `audit` job also run lint, typecheck, test and security | unset | no | no |
 
 ## Allure reporting
 
@@ -396,12 +540,19 @@ The other repos install `@automation/referenced-automation-ui` **by version** fr
    Add the change to `CHANGELOG.md` and commit both.
 4. **Point the scripts at the registry** (once per terminal):
    ```bash
-   export NPM_REGISTRY_URL="<your registry URL>"        # Windows cmd: set NPM_REGISTRY_URL=<your registry URL>
+   export NPM_REGISTRY_URL="<your registry URL>"        # bash / zsh
+   ```
+   ```powershell
+   $env:NPM_REGISTRY_URL = "<your registry URL>"        # PowerShell (cmd.exe: set NPM_REGISTRY_URL=<your registry URL>)
    ```
 5. **Publish** - a dry run first:
    ```bash
    ./scripts/publish-package.sh --dry-run     # builds the package and lists what would be uploaded
-   ./scripts/publish-package.sh               # uploads it            (Windows: scripts\publish-package.bat)
+   ./scripts/publish-package.sh               # uploads it
+   ```
+   ```powershell
+   .\scripts\publish-package.bat --dry-run    # PowerShell (cmd.exe: scripts\publish-package.bat)
+   .\scripts\publish-package.bat
    ```
    The script runs `npm config set registry "$NPM_REGISTRY_URL"`, builds with `create-package.sh` (clean, build, `npm pack`) and runs `npm publish <the .tgz> --registry "$NPM_REGISTRY_URL"`.
 6. **Check it arrived:** `npm view @automation/referenced-automation-ui versions --registry "$NPM_REGISTRY_URL"` lists the new version.
@@ -430,7 +581,7 @@ To take a newer version, **change that number** (say `"^1.3.0"`), run `npm insta
 
 ## First rollout: publish, then install from the registry
 
-To see the whole chain work from the registry (no `--local`): set `NPM_REGISTRY_URL`, publish `utils`, `api`, `ui`, `sap` **in that order** (`./scripts/publish-package.sh --dry-run`, then without `--dry-run`, in each repo; the first publish uses the current version, 1.0.0), confirm with `npm view @automation/referenced-automation-<name> versions --registry "$NPM_REGISTRY_URL"`, then in a consumer run `rm -rf node_modules && ./scripts/setup.sh` and check `npm ls @automation/referenced-automation-utils` and the `resolved` address in `package-lock.json`. The full walkthrough is [section 4.3 of the cross-repo guide](https://github.com/achaljoshi/referenced-automation-utils/blob/master/CROSS_REPO_GUIDE.md#43-first-rollout-publish-everything-then-install-from-the-registry).
+To see the whole chain work from the registry (no `--local`): set `NPM_REGISTRY_URL`, publish `utils`, `api`, `ui`, `sap` **in that order** (`./scripts/publish-package.sh --dry-run`, then without `--dry-run`, in each repo; the first publish uses the current version, 1.0.0), confirm with `npm view @automation/referenced-automation-<name> versions --registry "$NPM_REGISTRY_URL"`, then in a consumer delete `node_modules` and run `./scripts/setup.sh` (PowerShell: `Remove-Item -Recurse -Force node_modules` and then `.\scripts\setup.bat`) and check `npm ls @automation/referenced-automation-utils` and the `resolved` address in `package-lock.json`. The full walkthrough is [section 4.3 of the cross-repo guide](https://github.com/achaljoshi/referenced-automation-utils/blob/master/CROSS_REPO_GUIDE.md#43-first-rollout-publish-everything-then-install-from-the-registry).
 
 ## Using a package without a registry (local generation)
 
@@ -439,7 +590,11 @@ Use this when the packages are not in a registry yet, or you want to try a chang
 **Automatic - when the repos are checked out next to each other:**
 
 ```bash
-./scripts/setup.sh --local          # Windows: scripts\setup.bat --local
+./scripts/setup.sh --local          # bash / zsh
+```
+
+```powershell
+.\scripts\setup.bat --local         # PowerShell (cmd.exe: scripts\setup.bat --local)
 ```
 
 It builds the sibling repos this one depends on (`referenced-automation-utils`, `referenced-automation-api`) with their own `scripts/create-package.sh --local`, keeps the `.tgz` files in `../shared-packages` and installs them.
@@ -450,6 +605,13 @@ It builds the sibling repos this one depends on (`referenced-automation-utils`, 
    ```bash
    (cd ../referenced-automation-utils && ./scripts/create-package.sh --local)
    (cd ../referenced-automation-api && ./scripts/create-package.sh --local)
+   ```
+   ```powershell
+   cd ..\referenced-automation-utils
+   .\scripts\create-package.bat --local
+   cd ..\referenced-automation-api
+   .\scripts\create-package.bat --local
+   cd ..\referenced-automation-ui
    ```
    Each file is named `automation-<package>-<version>.tgz` after the version in that repo's `package.json` and lands in `../shared-packages`.
 2. Leave the files in `../shared-packages`, or copy them into the consuming repo (any folder works, for example `libs/` - keep it out of git).
