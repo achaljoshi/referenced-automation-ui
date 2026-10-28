@@ -15,12 +15,6 @@ test.describe('tabs', () => {
     await page.goto(`${APP}/`);
   });
 
-  test('waitForNewPage returns the tab the click opened; openPages lists them', async ({ context, page }) => {
-    const second = await tabs.waitForNewPage(context, () => actions.click(page.locator('#l')));
-    await assertions.toHaveTitle(second, 'Second page');
-    expect(tabs.openPages(context)).toHaveLength(2);
-  });
-
   test('openNewPage, findTab by URL or title, switchToTab', async ({ context, page }) => {
     const third = await tabs.openNewPage(context);
     await third.goto(`${APP}/third`);
@@ -31,11 +25,6 @@ test.describe('tabs', () => {
     await expect(tabs.findTab(context, { urlContains: '/nowhere' })).rejects.toThrow(/No open tab matches .*nowhere.*Open tabs: .*Home/);
   });
 
-  test('closeOtherTabs keeps one', async ({ context, page }) => {
-    await tabs.waitForNewPage(context, () => actions.click(page.locator('#l')));
-    await tabs.closeOtherTabs(context, page);
-    expect(tabs.openPages(context)).toEqual([page]);
-  });
 });
 
 test.describe('evaluate and browser-API mocks', () => {

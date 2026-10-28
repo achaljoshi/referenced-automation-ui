@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 
 export const APP_PAGE = `
 <button id="load" onclick="load()">Load</button>
-<ul id="items"></ul><span id="status"></span><img id="pic" src="/pic.png" alt="pic">
+<ul id="items"></ul><span id="status" role="status" aria-label="Status"></span><img id="pic" src="/pic.png" alt="pic">
 <script>
   async function load() {
     document.getElementById('status').textContent = 'loading';

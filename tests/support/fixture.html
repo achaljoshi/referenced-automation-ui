@@ -30,7 +30,7 @@
 
     <div id="drag-source" draggable="true" style="width:80px;height:40px;background:#ccc;">Drag me</div>
     <div id="drop-target" style="width:120px;height:60px;border:1px dashed #333;">Drop here</div>
-    <p id="drop-result"></p>
+    <p id="drop-result" role="status" aria-label="Drop result"></p>
 
     <div id="slow-list-container">
       <button id="load-items">Load items</button>
@@ -45,7 +45,7 @@
 
     <label for="file-input">Upload a file</label>
     <input type="file" id="file-input" />
-    <p id="file-name"></p>
+    <p id="file-name" role="status" aria-label="File name"></p>
   </section>
 
   <script>

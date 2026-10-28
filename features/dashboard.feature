@@ -21,11 +21,18 @@ Feature: The dashboard
   Scenario: Items that appear a moment later are waited for, without a wait step
     When I click the button "Load items"
     Then I should see 3 elements with the role "listitem"
-    And I should see "Item 2"
+    And the elements with the role "listitem" have the texts:
+      | Item 1 |
+      | Item 2 |
+      | Item 3 |
 
   Scenario: Drag and drop
     When I drag "Drag me" onto "Drop here"
-    Then I should see "dropped"
+    Then the status "Drop result" has the text "dropped"
+
+  Scenario: Content inside an embedded frame can be used
+    When I click the button "Click inside frame" in the frame "Embedded content demo"
+    Then the paragraph in the frame "Embedded content demo" reads "clicked inside frame"
 
   Scenario: A link that opens a new tab
     When I click the link "Open new tab" and switch to the new tab
@@ -40,12 +47,16 @@ Feature: The dashboard
 
   Scenario: Upload a file
     When I upload the file "tests/support/upload-fixture.txt" to "Upload a file"
-    Then I should see "upload-fixture.txt"
+    Then the status "File name" has the text "upload-fixture.txt"
 
   Scenario: The page works on a phone-sized screen
     Given I use the mobile viewport
     Then I should see the heading "Dashboard"
     And the page has no accessibility violations
+
+  @a11y
+  Scenario: The dashboard section is accessible
+    Then the "Dashboard" section of the page has no accessibility violations
 
   Scenario: Nothing is broken behind the scenes
     Given I watch the page for console errors and failed requests

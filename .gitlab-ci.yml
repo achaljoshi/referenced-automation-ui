@@ -109,7 +109,8 @@ build:
 
 # One leg per browser. `--project=$BROWSER` runs only that browser's project: the `bdd` project that createPlaywrightConfig
 # appends has no browser of its own, so it must not run in a leg that installed a different one - the Gherkin features run
-# once, in the `bdd` job below. tests/accessibility.spec.ts (tagged @a11y) runs once, in the `accessibility` job.
+# once, in the `bdd` job below (that includes the accessibility scenarios, tagged @a11y). tests/accessibility.spec.ts, the plain
+# negative control (also @a11y), runs once, in the `accessibility` job.
 test:
   stage: test
   needs: ["build"]

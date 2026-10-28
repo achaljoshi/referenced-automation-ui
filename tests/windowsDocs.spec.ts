@@ -151,7 +151,7 @@ test.describe('the documentation is correct for PowerShell and for Windows paths
       'npm run build',
       'npm run install:browsers',
       'npm test',
-      'tests/demo.spec.ts',
+      'tests/dialogs.spec.ts',
       '-g "',
       '--project=',
       '$env:BROWSER = "msedge"',
@@ -221,9 +221,9 @@ test.describe('negative controls: the checks flag a bad snippet and accept a goo
   });
 
   test('a backslash path after playwright test is flagged; forward slashes, titles and plain options are not', () => {
-    expect(backslashTestPaths('npx playwright test tests\\demo.spec.ts')).toHaveLength(1);
-    expect(backslashTestPaths('npx playwright test --project=chromium tests\\demo.spec.ts --headed')).toHaveLength(1);
-    expect(backslashTestPaths('npx playwright test tests/demo.spec.ts')).toEqual([]);
+    expect(backslashTestPaths('npx playwright test tests\\dialogs.spec.ts')).toHaveLength(1);
+    expect(backslashTestPaths('npx playwright test --project=chromium tests\\dialogs.spec.ts --headed')).toHaveLength(1);
+    expect(backslashTestPaths('npx playwright test tests/dialogs.spec.ts')).toEqual([]);
     expect(backslashTestPaths('npx playwright test -g "logs in"')).toEqual([]);
     expect(backslashTestPaths('cd C:\\work\\repo\nnpx playwright test')).toEqual([]);
   });
@@ -243,7 +243,7 @@ test.describe('negative controls: the checks flag a bad snippet and accept a goo
     expect(posixOnlyExamples(fence('bash', '(cd ../utils && ./scripts/create-package.sh --local)'))).toHaveLength(1);
     expect(posixOnlyExamples(`${fence('bash', 'ENV=stage npx playwright test')}\n\n${fence('powershell', '$env:ENV = "stage"; npx playwright test')}`)).toEqual([]);
     expect(posixOnlyExamples(`${fence('bash', 'ENV=stage npx playwright test')}\n\nlots\nof\ntext\nbetween\n\n${fence('powershell', 'x')}`)).toHaveLength(1);
-    expect(posixOnlyExamples(fence('bash', 'npm test\nnpx playwright test tests/demo.spec.ts'))).toEqual([]);
+    expect(posixOnlyExamples(fence('bash', 'npm test\nnpx playwright test tests/dialogs.spec.ts'))).toEqual([]);
     expect(posixOnlyExamples(fence('powershell', '$env:ENV = "stage"; npx playwright test'))).toEqual([]);
   });
 

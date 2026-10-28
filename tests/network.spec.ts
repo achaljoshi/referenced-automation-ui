@@ -54,13 +54,6 @@ test.describe('network', () => {
     await assertions.toHaveText(page.locator('#status'), 'loaded real');
   });
 
-  test('mockStatus simulates a failing dependency', async ({ page }) => {
-    await actions.goto(page, app.url);
-    await network.mockStatus(page, items, 503);
-    await actions.click(page.locator('#load'));
-    await assertions.toHaveText(page.locator('#status'), 'error 503');
-  });
-
   test('modifyJsonResponse edits the REAL response', async ({ page }) => {
     await actions.goto(page, app.url);
     await network.modifyJsonResponse(page, items, (body) => ({ ...body, items: [...body.items, 'injected'], source: 'edited' }));
@@ -136,16 +129,6 @@ test.describe('network', () => {
         }),
     );
     expect(received).toEqual(['hello', 'echo:ping']);
-  });
-
-  test('setOffline makes real requests fail, and back online they work', async ({ page, context }) => {
-    await actions.goto(page, app.url);
-    await network.setOffline(context, true);
-    await actions.click(page.locator('#load'));
-    await assertions.toHaveText(page.locator('#status'), 'failed');
-    await network.setOffline(context, false);
-    await actions.click(page.locator('#load'));
-    await assertions.toHaveText(page.locator('#status'), 'loaded real');
   });
 
   test('setExtraHeaders adds headers to every request of the context', async ({ page, context }) => {

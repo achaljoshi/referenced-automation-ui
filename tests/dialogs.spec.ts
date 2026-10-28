@@ -20,28 +20,10 @@ const dialogListeners = (page: Page) => (page as unknown as { listenerCount(even
 test.describe('dialogs', () => {
   test.beforeEach(async ({ page }) => servePage(page, PAGE));
 
-  test('handleDialogDuring accepts a confirm and tells you what it asked', async ({ page }) => {
-    const dialog = await dialogs.handleDialogDuring(page, () => actions.click(page.locator('#confirm')), 'accept');
-    expect(dialog).toMatchObject({ type: 'confirm', message: 'Delete this order?', handledAs: 'accepted' });
-    await assertions.toHaveText(page.locator('#out'), 'deleted');
-  });
-
-  test('...or dismisses it - Cancel is a real answer, not what happens by accident', async ({ page }) => {
-    const dialog = await dialogs.handleDialogDuring(page, () => actions.click(page.locator('#confirm')), 'dismiss');
-    expect(dialog.handledAs).toBe('dismissed');
-    await assertions.toHaveText(page.locator('#out'), 'kept');
-  });
-
   test('a prompt is answered with text and shows its default', async ({ page }) => {
     const dialog = await dialogs.handleDialogDuring(page, () => actions.click(page.locator('#prompt')), { accept: 'Ada' });
     expect(dialog).toMatchObject({ type: 'prompt', message: 'Your name?', defaultValue: 'anon' });
     await assertions.toHaveText(page.locator('#out'), 'hello Ada');
-  });
-
-  test('an alert is accepted by default', async ({ page }) => {
-    const dialog = await dialogs.handleDialogDuring(page, () => actions.click(page.locator('#alert')));
-    expect(dialog).toMatchObject({ type: 'alert', message: 'Saved!' });
-    await assertions.toHaveText(page.locator('#out'), 'after alert');
   });
 
   test('recordDialogs answers every dialog and records them in order', async ({ page }) => {

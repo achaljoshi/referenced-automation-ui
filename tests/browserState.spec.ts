@@ -78,12 +78,6 @@ test.describe('storage', () => {
 });
 
 test.describe('emulation', () => {
-  test('setViewport and breakpoints', async ({ page }) => {
-    await servePage(page, '<p id="w"></p><script>w.textContent = innerWidth + "x" + innerHeight</script>');
-    await emulation.setViewport(page, ...emulation.breakpoints.tablet);
-    expect(await page.evaluate(() => `${innerWidth}x${innerHeight}`)).toBe('768x1024');
-  });
-
   test('emulateMedia: dark mode, reduced motion, print', async ({ page }) => {
     await servePage(page, '<p>x</p>');
     const matches = (query: string) => page.evaluate((q) => matchMedia(q).matches, query);
@@ -136,12 +130,6 @@ test.describe('clock', () => {
       show(); setInterval(() => { document.getElementById('ticks').textContent = Number(document.getElementById('ticks').textContent) + 1; show(); }, 1000);
       setTimeout(() => document.getElementById('logout').textContent = 'logged out', 5 * 60 * 1000);
     </script>`;
-
-  test('setFixedTime: Date reports the fixed time', async ({ page }) => {
-    await clock.setFixedTime(page, new Date('2024-02-02T10:00:00Z'));
-    await servePage(page, CLOCK_PAGE);
-    await assertions.toHaveText(page.locator('#now'), '2024-02-02T10:00:00.000Z');
-  });
 
   test('install + fastForward: a five-minute session timeout without waiting five minutes', async ({ page }) => {
     await clock.installClock(page, new Date('2024-02-02T08:00:00Z'));

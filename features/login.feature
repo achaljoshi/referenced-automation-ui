@@ -14,6 +14,7 @@ Feature: Logging in
     Then I should see the heading "Dashboard"
     And I should not see the heading "Login"
 
+  @regression
   Scenario: A wrong password is refused with a message
     When I fill in "Username" with "ada"
     And I fill in "Password" with "not-the-password"
@@ -33,6 +34,7 @@ Feature: Logging in
       | ada   | wrong    | Invalid credentials |
       | grace | secret   | Invalid credentials |
 
+  @regression @a11y
   Scenario: The login form is accessible
     Then the page has no accessibility violations
 
