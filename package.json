@@ -39,7 +39,7 @@
     "codegen-to-tests": "node dist/cli/codegenToTests.js"
   },
   "dependencies": {
-    "@automation/referenced-automation-utils": "^1.0.0",
+    "@automation/referenced-automation-utils": "^1.0.1",
     "@axe-core/playwright": "^4.13.0",
     "typescript": "^5.7.3"
   },
